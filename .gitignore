@@ -1,0 +1,80 @@
+# ────────────────────────────
+# 隐私 & 敏感文件
+# ────────────────────────────
+
+# 运行时配置（含服务器地址、token 等）
+config.toml
+config copy.toml
+*.env
+.env.*
+.env
+
+# 日志文件（可能含消息内容）
+*.log
+logs/
+
+# 微信相关缓存/文件
+pyweixin/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# 运行时生成的微信文件
+save_media*/
+dump_*/**/*
+
+# ────────────────────────────
+# 系统 & IDE
+# ────────────────────────────
+
+# Windows
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm / IDEA
+.idea/
+*.iml
+
+# Vim / Emacs
+*~
+*.swp
+*.swo
+*.un~
+*.bak
+
+# ────────────────────────────
+# Python
+# ────────────────────────────
+
+# Virtual environment
+venv/
+.venv/
+env/
+.venv/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ────────────────────────────
+# Git
+# ────────────────────────────
+
+# Keep gitignore itself
+!.gitignore
+
+# Git history backup
+*.orig
