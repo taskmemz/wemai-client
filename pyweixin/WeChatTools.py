@@ -249,7 +249,7 @@ class Tools():
         '''
         video_folder=''
         msg_folder=Tools.where_msg_folder(open_folder=False)
-        if msg_folder:video_folder=os.path.Wjoin(msg_folder,'video')
+        if msg_folder:video_folder=os.path.join(msg_folder,'video')
         if open_folder:os.startfile(video_folder)
         return video_folder
 
@@ -354,9 +354,9 @@ class Tools():
             new_top=(screen_height-window_height)//2
             if screen_width!=window_width:
                 win32gui.MoveWindow(handle, new_left, new_top, window_width, window_height, True)
-                win32gui.SetWindowPos(handle,win32con.HWND_TOPMOST, 
+                win32gui.SetWindowPos(handle,win32con.HWND_TOP, 
                 0, 0, 0, 0,win32con.SWP_NOMOVE|win32con.SWP_NOSIZE)
-        except ExceptionGroup:
+        except Exception:
             print(f'无法移动窗口至中央!')
         return window
 
@@ -1237,7 +1237,7 @@ class Navigator():
             return main_window
     
     @staticmethod
-    def open_seperate_dialog_window(friend:str,select:bool=False,is_maximize:bool=None,window_minimize:bool=False,close_weixin:bool=None)->WindowSpecification:
+    def open_seperate_dialog_window(friend:str,select:bool=False,is_maximize:bool=None,window_minimize:bool=False,close_weixin:bool=None,return_is_group:bool=False):
         '''
         该方法用于单独打开某个好友(非公众号)的聊天窗口(主要用于监听消息)
         Args:
@@ -1247,8 +1247,10 @@ class Navigator():
             window_minimize:独立聊天窗口是否最小化(监听消息方便),默认不最小
             search_pages:在会话列表中查询查找好友时滚动列表的次数,默认为5,一次可查询5-12人,当search_pages为0时,直接从顶部搜索栏搜索好友信息打开聊天界面
             close_weixin:打开独立窗口后关闭微信
+            return_is_group:为True时返回(dialog_window,is_group)元组
         Returns:
             dialog_window:与好友的聊天窗口
+            若return_is_group=True则返回(dialog_window,is_group)
         '''
         def get_search_result(friend:str,search_result:ListViewWrapper)->(ListItemWrapper|None):
             '''查看顶部搜索列表里有没有名为friend的listitem,只能用来查找联系人,群聊,服务号,公众号
@@ -1308,19 +1310,83 @@ class Navigator():
         except Exception:
             search_result=None 
         if search_result is not None:
-            search_result.click_input()
-            session_list.wait(wait_for='ready',timeout=1)
-            if is_contact:
-                selected_items=[listitem for listitem in session_list.children(control_type='ListItem') if listitem.is_selected()]
-                if selected_items:
-                    selected_items[0].double_click_input()
-                # else: 主界面已经显示该好友(session_list 没有 selected 项),
-                # 跳过 double_click 直接 fall through 到 move_window_to_center
-            dialog_window=Tools.move_window_to_center(Window={'class_name':'mmui::ChatSingleWindow','title':f'{friend}'})
+            # 先把手头已打开的独立窗口压到 Z 序底部，保证主窗口在最前面
+            try:
+                existing_hwnds = []
+                def _enum_cb(hwnd, lst):
+                    if win32gui.GetClassName(hwnd) == 'mmui::ChatSingleWindow':
+                        lst.append(hwnd)
+                    return True
+                win32gui.EnumWindows(_enum_cb, existing_hwnds)
+                for hwnd in existing_hwnds:
+                    win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM,
+                                          0, 0, 0, 0,
+                                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            except Exception:
+                pass
+            # 尝试点击搜索结果 + 双击选中的会话，如果被已打开独立窗口遮挡则重试
+            for attempt in range(2):
+                try:
+                    search_result.click_input()
+                    session_list.wait(wait='ready', timeout=1)
+                except Exception:
+                    pass
+                if is_contact:
+                    selected_items = [listitem for listitem in session_list.children(
+                        control_type='ListItem') if listitem.is_selected()]
+                    if selected_items:
+                        try:
+                            selected_items[0].double_click_input()
+                            break  # 成功则退出重试
+                        except Exception:
+                            # 第一次双击失败，拉回主窗口焦点后重试
+                            try:
+                                win32gui.SetForegroundWindow(main_window.handle)
+                            except Exception:
+                                main_window.set_focus()
+                            time.sleep(0.3)
+                            selected_items = [listitem for listitem in session_list.children(
+                                control_type='ListItem') if listitem.is_selected()]
+                            if selected_items:
+                                try:
+                                    selected_items[0].double_click_input()
+                                    break
+                                except Exception:
+                                    pass
+                # 失败：强行把主窗口拉到前景再试一次
+                try:
+                    win32gui.SetForegroundWindow(main_window.handle)
+                except Exception:
+                    main_window.set_focus()
+                time.sleep(0.5)
+                # 重新搜索
+                search.click_input()
+                search.set_text(friend)
+                try:
+                    search_results = main_window.child_window(
+                        **Lists.SearchResult).wait(wait_for='ready', timeout=2)
+                    search_result, is_contact = get_search_result(
+                        friend=friend, search_result=search_results)
+                except Exception:
+                    search_result = None
+                if search_result is None:
+                    break
+            else:
+                # 两次都失败，最后一次的异常不再尝试
+                pass
+            # 在主窗口仍显示该聊天时检测是否为群聊（此时独立窗口尚未置顶）
+            try:
+                is_group = Tools.is_group_chat(main_window)
+            except Exception:
+                is_group = False
+            dialog_window = Tools.move_window_to_center(
+                Window={'class_name': 'mmui::ChatSingleWindow', 'title': f'{friend}'})
             if select:Tools.select_chatList(dialog_window)
             if window_minimize:
                 win32gui.SendMessage(dialog_window.handle, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE, 0)
             if close_weixin:main_window.close()
+            if return_is_group:
+                return dialog_window, is_group
             return dialog_window
         else:#搜索结果栏中没有关于传入参数friend好友昵称或备注的搜索结果，关闭主界面,引发NosuchFriend异常
             chat_button.click_input()

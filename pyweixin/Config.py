@@ -55,7 +55,7 @@ class globalConfig:
             cls._instance._send_delay=0.2
             cls._instance._audio_length=60
             cls._instance._clear=True
-            cls._instance._window_size=(1000,1000)
+            cls._instance._window_size=(1400,850)
             cls._instance._language=None
             cls._instance._Version=None
         return cls._instance

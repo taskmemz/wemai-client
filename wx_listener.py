@@ -81,6 +81,8 @@ class WeChatListener:
         self._send_lock = threading.RLock()
         self._Navigator: Any = None
         self._Monitor: Any = None
+        # 记录每个聊天是否为群聊，chat_name -> bool
+        self._chat_group_status: dict[str, bool] = {}
 
     def start(self) -> None:
         self._running = True
@@ -199,10 +201,12 @@ class WeChatListener:
             if chat in self._excluded or chat in self._dialog_windows:
                 continue
             try:
-                dw = self._Navigator.open_seperate_dialog_window(
+                dw, is_group = self._Navigator.open_seperate_dialog_window(
                     friend=chat, window_minimize=False, close_weixin=False,
+                    return_is_group=True,
                 )
                 self._dialog_windows[chat] = dw
+                self._chat_group_status[chat] = is_group
                 opened += 1
                 if opened % 5 == 0:
                     time.sleep(0.5)
@@ -224,9 +228,11 @@ class WeChatListener:
                 if count > 0:
                     logger.info("全局扫描发现: [%s] %d 条新消息", chat_name, count)
                     try:
-                        dw = Navigator.open_seperate_dialog_window(
+                        dw, is_group = Navigator.open_seperate_dialog_window(
                             friend=chat_name, window_minimize=False, close_weixin=False,
+                            return_is_group=True,
                         )
+                        self._chat_group_status[chat_name] = is_group
                         self._read_last_message(dw, chat_name)
                         # 加入监控列表，之后的轮询会自动处理
                         self._dialog_windows[chat_name] = dw
@@ -237,6 +243,24 @@ class WeChatListener:
             logger.debug("全局扫描异常: %s", e)
         # 扫描完后归位会话列表
         self._type_home_on_session_list()
+
+    def _type_home_on_session_list(self):
+        """将主窗口的会话列表滚回顶部"""
+        try:
+            import win32gui
+            from pywinauto import Desktop
+            from pyweixin.Uielements import Main_window as MainWindowUI
+            desktop = Desktop(backend='uia')
+            hwnd = win32gui.FindWindow('Qt51514QWindowIcon', '微信')
+            if hwnd == 0:
+                hwnd = win32gui.FindWindow('Qt51514QWindowIcon', 'Weixin')
+            if hwnd:
+                mw = desktop.window(handle=hwnd)
+                sl = mw.child_window(**MainWindowUI.SessionList)
+                if sl.exists(timeout=0.2):
+                    sl.type_keys('{HOME}')
+        except Exception:
+            pass
 
     def _read_last_message(self, dw: Any, chat_name: str) -> None:
         chat_list = dw.child_window(control_type="List")
@@ -250,7 +274,7 @@ class WeChatListener:
             text = item.window_text()
             if not text:
                 continue
-            msg_type, sender, content, is_group = self._parse_message(chat_name, text)
+            msg_type, sender, content, is_group = self._parse_message(chat_name, text, is_group=self._chat_group_status.get(chat_name, False))
             if content:
                 media_path = _find_latest_media_file() or "" if msg_type in ("emoji", "image") else ""
                 self._emit(chat_name, sender, content, is_group, msg_type, media_path)
@@ -260,10 +284,12 @@ class WeChatListener:
             if chat in self._excluded or chat in self._dialog_windows:
                 continue
             try:
-                dw = self._Navigator.open_seperate_dialog_window(
+                dw, is_group = self._Navigator.open_seperate_dialog_window(
                     friend=chat, window_minimize=False, close_weixin=False,
+                    return_is_group=True,
                 )
                 self._dialog_windows[chat] = dw
+                self._chat_group_status[chat] = is_group
                 logger.info("动态打开窗口: %s", chat)
             except Exception as e:
                 logger.debug("打开窗口 [%s] 失败: %s", chat, e)
@@ -319,7 +345,8 @@ class WeChatListener:
         last_seen[chat_name] = rid
 
         # 检测消息类型（动画表情/图片/视频/文本）
-        msg_type, sender, content, is_group = self._parse_message(chat_name, text)
+        is_group = self._chat_group_status.get(chat_name, False)
+        msg_type, sender, content, is_group = self._parse_message(chat_name, text, is_group=is_group)
         if not content:
             return
 
@@ -334,14 +361,14 @@ class WeChatListener:
         self._emit(chat_name, sender, content, is_group, msg_type, media_path)
 
     @staticmethod
-    def _parse_message(chat_name: str, text: str) -> tuple[str, str, str, bool]:
+    def _parse_message(chat_name: str, text: str, is_group: bool = False) -> tuple[str, str, str, bool]:
         # 特殊标签检测
         emoji_labels = ("动画表情", "Animated Stickers", "動態貼圖")
         image_labels = ("[图片]", "图片", "[Image]", "Image", "[圖片]", "圖片")
         video_labels = ("[视频]", "视频", "[Video]", "Video", "[影片]", "影片")
 
         if any(text.strip() == l for l in emoji_labels):
-            return "emoji", chat_name, "[动画表情]", chat_name != chat_name  # is_group=False for direct
+            return "emoji", chat_name, "[动画表情]", False
 
         if any(text.strip().startswith(l) for l in image_labels):
             return "image", chat_name, "[图片]", False
@@ -349,10 +376,15 @@ class WeChatListener:
         if any(text.strip().startswith(l) for l in video_labels):
             return "video", chat_name, "[视频]", False
 
-        # 普通文本：群聊格式 "昵称\n内容"，私聊格式 "内容"
-        lines = text.split("\n", 1)
-        if len(lines) >= 2 and not _is_single_line_sender(lines[0]):
-            return "text", lines[0].strip(), lines[1].strip(), True
+        # 已知是群聊：尝试用 "\n" 拆分出发送者
+        if is_group:
+            lines = text.split("\n", 1)
+            if len(lines) >= 2:
+                return "text", lines[0].strip(), lines[1].strip(), True
+            # 独立窗口可能不显示昵称前缀，fallback 以聊天名作为发送者
+            return "text", chat_name, text.strip(), True
+
+        # 已知是私聊
         return "text", chat_name, text.strip(), False
 
     def _emit(self, chat: str, sender: str, content: str, is_group: bool, msg_type: str = "text", media_path: str = "") -> None:

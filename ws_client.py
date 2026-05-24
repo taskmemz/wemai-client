@@ -20,6 +20,19 @@ class WsPluginClient:
         self._on_config: Optional[Callable[[dict[str, Any]], None]] = None
         self._should_run = True
 
+    async def _cleanup(self) -> None:
+        """关闭并清理旧连接，确保下次 connect 不会受残留 socket 影响"""
+        self._connected = False
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+            self._writer = None
+        if self._reader is not None:
+            self._reader = None
+
     def set_outbound_handler(self, handler: Callable[[dict[str, Any]], None]) -> None:
         self._on_outbound = handler
 
@@ -31,6 +44,7 @@ class WsPluginClient:
         return self._connected
 
     async def connect(self) -> None:
+        await self._cleanup()
         while self._should_run:
             try:
                 self._reader, self._writer = await asyncio.open_connection(
@@ -44,25 +58,29 @@ class WsPluginClient:
                 await asyncio.sleep(self._reconnect_delay)
 
     async def run(self) -> None:
-        await self.connect()
-        await self.request_config()
-        while self._should_run and self._connected:
-            try:
-                raw_len = await self._reader.readexactly(4)
-                length = int.from_bytes(raw_len, "big")
-                payload = await self._reader.readexactly(length)
-                msg = json.loads(payload.decode("utf-8"))
-                if msg.get("type") in ("config_update", "sync_config"):
-                    if self._on_config is not None:
-                        self._on_config(msg)
-                elif self._on_outbound is not None:
-                    self._on_outbound(msg)
-            except (asyncio.IncompleteReadError, ConnectionError, json.JSONDecodeError) as e:
-                logger.warning("与插件服务器断开: %s", e)
-                self._connected = False
-                if self._should_run:
-                    logger.info("尝试重新连接...")
-                    await self.connect()
+        while self._should_run:
+            await self.connect()
+            if not self._should_run or not self._connected:
+                break
+            await self.request_config()
+            while self._should_run and self._connected:
+                try:
+                    raw_len = await self._reader.readexactly(4)
+                    length = int.from_bytes(raw_len, "big")
+                    payload = await self._reader.readexactly(length)
+                    msg = json.loads(payload.decode("utf-8"))
+                    if msg.get("type") in ("config_update", "sync_config"):
+                        if self._on_config is not None:
+                            self._on_config(msg)
+                    elif self._on_outbound is not None:
+                        self._on_outbound(msg)
+                except (asyncio.IncompleteReadError, ConnectionError, OSError, json.JSONDecodeError) as e:
+                    logger.warning("与插件服务器断开: %s", e)
+                    self._connected = False
+                    await self._cleanup()
+            if self._should_run:
+                logger.info("断线，%s 秒后重连...", self._reconnect_delay)
+                await asyncio.sleep(self._reconnect_delay)
 
     async def request_config(self) -> bool:
         return await self.send_inbound({"type": "sync_config"})
@@ -80,15 +98,10 @@ class WsPluginClient:
             return True
         except Exception as e:
             logger.error("发送入站消息失败: %s", e)
-            self._connected = False
+            await self._cleanup()
             return False
 
     async def stop(self) -> None:
         self._should_run = False
-        self._connected = False
-        if self._writer is not None:
-            try:
-                self._writer.close()
-            except Exception:
-                pass
+        await self._cleanup()
         logger.info("插件客户端已停止")
