@@ -30,6 +30,18 @@ class WsPluginClient:
     def connected(self) -> bool:
         return self._connected
 
+    async def _cleanup(self) -> None:
+        self._connected = False
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+            self._writer = None
+        if self._reader is not None:
+            self._reader = None
+
     async def connect(self) -> None:
         await self._cleanup()
         retry = 0

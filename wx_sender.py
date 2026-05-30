@@ -63,55 +63,12 @@ class WeChatSender:
         if not receiver or not segments:
             return
 
-        dw = self._dialog_windows.get(receiver)
-        if dw is None:
-            logger.warning("未找到 [%s] 的独立窗口，尝试用 pyweixin 发送", receiver)
-            self._do_send_via_pyweixin(receiver, segments, at_members)
-            return
-
         # 通知 listener 暂停对该窗口的轮询
         if self._on_pre_send is not None:
             self._on_pre_send(receiver)
 
-        # 将窗口带到前台，否则 type_keys 可能不生效
-        try:
-            dw.set_focus()
-            time.sleep(0.2)
-            dw.restore()
-            time.sleep(0.1)
-        except Exception:
-            pass
-
-        # @ 前缀已在 segments 中合成文本（@name ），直接输入即可
-        for seg in segments:
-            stype = seg.get("type", "text")
-            sdata = seg.get("data", "")
-            if stype != "text" or not sdata:
-                continue
-            try:
-                # 多选模式下 UIA 树结构变化，逐级尝试找输入框
-                edits = (
-                    dw.descendants(control_type="Edit")
-                    or dw.child_window(control_type="Edit")
-                    or dw.descendants(control_type="Document")
-                )
-                if edits:
-                    try:
-                        edits[0].set_focus()
-                    except Exception:
-                        pass
-                    edits[0].click_input()
-                    edits[0].type_keys("^a{BACKSPACE}")  # 清空原有内容
-                    edits[0].type_keys(sdata + "{ENTER}", pause=0.02)
-                    logger.info("→ [%s] %s", receiver, sdata[:60])
-                else:
-                    logger.warning("[%s] 独立窗口中未找到输入框，fallback pyweixin", receiver)
-                    self._do_send_via_pyweixin(receiver, segments)
-                    return
-            except Exception as e:
-                logger.error("向 [%s] 发送失败: %s", receiver, e)
-                self._do_send_via_pyweixin(receiver, segments)
-                return
+        # 统一走 pyweixin 发送（多选模式下 Edit 控件定位不可靠）
+        self._do_send_via_pyweixin(receiver, segments, at_members)
 
         if self._on_post_send is not None:
             self._on_post_send(receiver)
@@ -120,12 +77,23 @@ class WeChatSender:
         from pyweixin import GlobalConfig, Messages
         GlobalConfig.close_weixin = self._close_weixin
         GlobalConfig.send_delay = self._send_delay
+        has_at = bool(at_members)
         for seg in segments:
             sdata = seg.get("data", "")
-            if sdata:
-                Messages.send_messages_to_friend(
-                    friend=receiver, messages=[sdata],
-                    at_members=at_members or [],
-                    close_weixin=False,
-                )
-                logger.info("→ pyweixin [%s] %s @%s", receiver, sdata[:60], at_members)
+            if not sdata:
+                continue
+            # 有 @ 高亮时去掉文本中的 @name，避免微信里重复显示
+            if has_at and sdata.startswith("@"):
+                seg_at = at_members
+                clean = sdata
+                for name in at_members:
+                    clean = clean.replace(f"@{name}", "").strip()
+                sdata = clean or sdata  # 如果清空后没内容了，保留原文本
+            else:
+                seg_at = []
+            Messages.send_messages_to_friend(
+                friend=receiver, messages=[sdata],
+                at_members=seg_at,
+                close_weixin=False,
+            )
+            logger.info("→ pyweixin [%s] %s @%s", receiver, sdata[:60], seg_at)
