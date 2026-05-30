@@ -6,6 +6,9 @@ import tomllib
 from dataclasses import dataclass, field
 
 
+_CONFIG_PATH: str | None = None
+
+
 @dataclass
 class ConnectionConfig:
     server_host: str = "127.0.0.1"
@@ -19,6 +22,7 @@ class WeChatConfig:
     excluded: list[str] = field(default_factory=lambda: ["文件传输助手", "微信团队", "微信支付"])
     send_delay: float = 0.2
     close_weixin: bool = False
+    group_members: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,6 +40,10 @@ class ClientConfig:
 
 
 def find_config_toml() -> str:
+    """返回配置文件的路径。找到现有文件则直接返回，否则以脚本所在目录为默认位置。"""
+    global _CONFIG_PATH
+    if _CONFIG_PATH is not None:
+        return _CONFIG_PATH
     dirs = [
         os.path.dirname(os.path.abspath(__file__)),
         os.getcwd(),
@@ -43,42 +51,126 @@ def find_config_toml() -> str:
     for d in dirs:
         p = os.path.join(d, "config.toml")
         if os.path.isfile(p):
+            _CONFIG_PATH = p
             return p
-    return os.path.join(dirs[0], "config.toml")
+    p = os.path.join(dirs[0], "config.toml")
+    _CONFIG_PATH = p
+    return p
+
+
+def _prompt_host() -> str:
+    """交互式询问服务器地址"""
+    default = "127.0.0.1"
+    try:
+        val = input(f"  服务器地址 (默认 {default}): ").strip()
+        return val or default
+    except (EOFError, KeyboardInterrupt):
+        return default
+
+
+def _prompt_port() -> int:
+    """交互式询问服务器端口"""
+    default = 9721
+    try:
+        val = input(f"  服务器端口 (默认 {default}): ").strip()
+        return int(val) if val else default
+    except (EOFError, KeyboardInterrupt, ValueError):
+        return default
+
+
+def _make_toml(server_host: str, server_port: int) -> str:
+    return f"""\
+[connection]
+server_host = "{server_host}"
+server_port = {server_port}
+reconnect_delay = 5.0
+
+[wechat]
+target_chats = []
+excluded = ["文件传输助手", "微信团队", "微信支付"]
+send_delay = 0.2
+close_weixin = false
+
+[wechat.group_members]
+# "群聊名称1" = ["成员A", "成员B"]
+# "群聊名称2" = ["成员X", "成员Y"]
+
+[log]
+level = "INFO"
+file = "wemai-client.log"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+"""
+
+
+def _interactive_create(path: str) -> None:
+    """交互式创建配置文件"""
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+
+    print()
+    print("=" * 50)
+    print("  WeMai Client 首次启动")
+    print("  请填写服务器（WeMai Adapter）的连接信息")
+    print("=" * 50)
+    host = _prompt_host()
+    port = _prompt_port()
+    print()
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_make_toml(host, port))
+
+    logger = logging.getLogger("wemai_client.config")
+    logger.info("配置文件已创建: %s", path)
 
 
 def load_config(path: str | None = None) -> ClientConfig:
+    logger = logging.getLogger("wemai_client.config")
+
     if path is None:
         path = find_config_toml()
+
+    # 不存在则交互式创建
     if not os.path.isfile(path):
-        return ClientConfig()
-    with open(path, "rb") as f:
-        raw_bytes = f.read()
-    if raw_bytes.startswith(b'\xef\xbb\xbf'):
-        raw_bytes = raw_bytes[3:]
+        _interactive_create(path)
+
+    # 读取
     try:
-        raw = tomllib.loads(raw_bytes.decode("utf-8"))
-    except Exception as e:
-        logging.getLogger("wemai_client.config").warning("config.toml 解析失败: %s，使用默认配置", e)
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        logger.warning("无法读取配置文件 %s: %s", path, e)
         return ClientConfig()
-    conn_raw = raw.get("connection", {})
-    wx_raw = raw.get("wechat", {})
-    log_raw = raw.get("log", {})
+
+    # 跳过 BOM
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except Exception as e:
+        logger.warning("config.toml 解析失败: %s，请检查文件格式", e)
+        return ClientConfig()
+
+    conn = data.get("connection", {})
+    wx = data.get("wechat", {})
+    lg = data.get("log", {})
+
     return ClientConfig(
         connection=ConnectionConfig(
-            server_host=str(conn_raw.get("server_host", "127.0.0.1")),
-            server_port=int(conn_raw.get("server_port", 9721)),
-            reconnect_delay=float(conn_raw.get("reconnect_delay", 5.0)),
+            server_host=str(conn.get("server_host", "127.0.0.1")),
+            server_port=int(conn.get("server_port", 9721)),
+            reconnect_delay=float(conn.get("reconnect_delay", 5.0)),
         ),
         wechat=WeChatConfig(
-            target_chats=list(wx_raw.get("target_chats", [])),
-            excluded=list(wx_raw.get("excluded", ["文件传输助手", "微信团队", "微信支付"])),
-            send_delay=float(wx_raw.get("send_delay", 0.2)),
-            close_weixin=bool(wx_raw.get("close_weixin", False)),
+            target_chats=list(wx.get("target_chats", [])),
+            excluded=list(wx.get("excluded", ["文件传输助手", "微信团队", "微信支付"])),
+            send_delay=float(wx.get("send_delay", 0.2)),
+            close_weixin=bool(wx.get("close_weixin", False)),
+            group_members=dict(wx.get("group_members", {})),
         ),
         log=LogConfig(
-            level=str(log_raw.get("level", "INFO")),
-            file=str(log_raw.get("file", "wemai-client.log")),
-            format=str(log_raw.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")),
+            level=str(lg.get("level", "INFO")),
+            file=str(lg.get("file", "wemai-client.log")),
+            format=str(lg.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")),
         ),
     )

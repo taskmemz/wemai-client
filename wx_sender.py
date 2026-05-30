@@ -73,6 +73,15 @@ class WeChatSender:
         if self._on_pre_send is not None:
             self._on_pre_send(receiver)
 
+        # 将窗口带到前台，否则 type_keys 可能不生效
+        try:
+            dw.set_focus()
+            time.sleep(0.2)
+            dw.restore()
+            time.sleep(0.1)
+        except Exception:
+            pass
+
         # @ 前缀已在 segments 中合成文本（@name ），直接输入即可
         for seg in segments:
             stype = seg.get("type", "text")
@@ -80,9 +89,19 @@ class WeChatSender:
             if stype != "text" or not sdata:
                 continue
             try:
-                edits = dw.descendants(control_type="Edit")
+                # 多选模式下 UIA 树结构变化，逐级尝试找输入框
+                edits = (
+                    dw.descendants(control_type="Edit")
+                    or dw.child_window(control_type="Edit")
+                    or dw.descendants(control_type="Document")
+                )
                 if edits:
-                    edits[0].set_focus()
+                    try:
+                        edits[0].set_focus()
+                    except Exception:
+                        pass
+                    edits[0].click_input()
+                    edits[0].type_keys("^a{BACKSPACE}")  # 清空原有内容
                     edits[0].type_keys(sdata + "{ENTER}", pause=0.02)
                     logger.info("→ [%s] %s", receiver, sdata[:60])
                 else:
