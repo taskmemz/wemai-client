@@ -23,6 +23,7 @@ class WeChatConfig:
     send_delay: float = 0.2
     close_weixin: bool = False
     group_members: dict[str, list[str]] = field(default_factory=dict)
+    include_muted: bool = False
 
 
 @dataclass
@@ -90,6 +91,7 @@ target_chats = []
 excluded = ["文件传输助手", "微信团队", "微信支付"]
 send_delay = 0.2
 close_weixin = false
+include_muted = false
 
 [wechat.group_members]
 # "群聊名称1" = ["成员A", "成员B"]
@@ -167,6 +169,7 @@ def load_config(path: str | None = None) -> ClientConfig:
             send_delay=float(wx.get("send_delay", 0.2)),
             close_weixin=bool(wx.get("close_weixin", False)),
             group_members=dict(wx.get("group_members", {})),
+            include_muted=bool(wx.get("include_muted", False)),
         ),
         log=LogConfig(
             level=str(lg.get("level", "INFO")),

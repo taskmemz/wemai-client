@@ -92,53 +92,6 @@ def _find_latest_emoticon() -> str | None:
     except Exception as e:
         logger.warning("表情查找异常: %s", e)
         return None
-        # 微信 3.x: FileStorage, 微信 4.0: cache/msg attach 等
-        search_dirs = [
-            os.path.join(wxid_folder, "FileStorage"),
-            os.path.join(wxid_folder, "msg", "file"),
-            os.path.join(wxid_folder, "msg", "attach"),
-            os.path.join(wxid_folder, "file"),
-            os.path.join(wxid_folder, "cache"),
-        ]
-        candidates = []
-        image_ext = (".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".dat")
-        for base in search_dirs:
-            if not os.path.isdir(base):
-                continue
-            logger.info("媒体查找: 扫描目录 %s", base)
-            for root, dirs, files in os.walk(base):
-                for f in files:
-                    fpath = os.path.join(root, f)
-                    if fpath == _LATEST_MEDIA_FILE:
-                        continue
-                    ext = os.path.splitext(f)[1].lower()
-                    # 允许已知图片扩展名 OR 无扩展名（微信 4.0 缓存文件）
-                    if ext not in image_ext and ext != "":
-                        continue
-                    # 无扩展名或 .dat 文件需要魔数验证
-                    if ext in ("", ".dat"):
-                        img_type = _detect_image_type_static(fpath)
-                        if img_type is None:
-                            continue
-                    try:
-                        mtime = os.path.getmtime(fpath)
-                        size = os.path.getsize(fpath)
-                    except OSError:
-                        continue
-                    if size < 1024:  # 头像缩略图等小文件跳过
-                        continue
-                    candidates.append((fpath, mtime))
-        logger.info("媒体查找: %d 候选", len(candidates))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        result = candidates[0][0]
-        logger.info("媒体查找: 选中 %s", result)
-        _LATEST_MEDIA_FILE = result
-        return result
-    except Exception as e:
-        logger.warning("媒体查找异常: %s", e)
-        return None
 
 
 _KNOWN_IDS: set[str] = set()
@@ -191,6 +144,7 @@ class WeChatListener:
         send_delay: float,
         on_message: Optional[Callable[[dict], None]] = None,
         group_members: Optional[dict[str, list[str]]] = None,
+        include_muted: bool = False,
     ) -> None:
         self._target_chats = list(target_chats)
         self._excluded = set(excluded)
@@ -198,6 +152,7 @@ class WeChatListener:
         self._close_weixin = close_weixin
         self._send_delay = send_delay
         self._on_message = on_message
+        self._include_muted = include_muted
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._dialog_windows: dict[str, Any] = {}
@@ -292,18 +247,23 @@ class WeChatListener:
             if hwnd == 0:
                 hwnd = win32gui.FindWindow('Qt51514QWindowIcon', 'Weixin')
             if hwnd:
-                win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
+                win32gui.ShowWindow(hwnd, 9)
                 time.sleep(0.2)
                 rect = win32gui.GetWindowRect(hwnd)
                 w, h = rect[2] - rect[0], rect[3] - rect[1]
                 target_w, target_h = max(w, 1200), max(h, 800)
                 if w < target_w or h < target_h:
                     win32gui.MoveWindow(hwnd, rect[0], rect[1], target_w, target_h, True)
-                # 直接写死目标尺寸，避免 pyweixin 内部缩回去
                 GlobalConfig.window_size = (target_w, target_h)
                 logger.info("微信主窗口已调整: %dx%d → %dx%d", w, h, target_w, target_h)
+
+            # 保存主窗口引用供全局扫描使用
+            from pywinauto import Desktop
+            desktop = Desktop(backend='uia')
+            self._main_window = desktop.window(handle=hwnd)
         except Exception as e:
-            logger.warning("调整微信窗口大小失败: %s", e)
+            logger.warning("调整窗口/保存引用失败: %s", e)
+            self._main_window = None
 
         try:
             info = Contacts.check_my_info(close_weixin=False)
@@ -314,7 +274,10 @@ class WeChatListener:
 
         chats = list(self._target_chats)
         if chats:
-            self._open_all_dialog_windows(chats)
+            try:
+                self._open_all_dialog_windows(chats)
+            except Exception as e:
+                logger.error("打开独立窗口异常: %s", e)
         else:
             logger.info("target_chats 为空，等待 Adapter 同步监听目标...")
 
@@ -334,17 +297,38 @@ class WeChatListener:
             if now - last_heartbeat >= 60:
                 logger.info("运行中: %d 个窗口", len(self._dialog_windows))
                 last_heartbeat = now
+            time.sleep(1.0)  # 避免忙等
 
     def _open_all_dialog_windows(self, chats: list[str]) -> None:
         opened = 0
         for chat in chats:
             if chat in self._excluded or chat in self._dialog_windows:
                 continue
+            logger.info("正在打开窗口: [%s]", chat)
             try:
-                dw, is_group = self._Navigator.open_seperate_dialog_window(
-                    friend=chat, window_minimize=False, close_weixin=False,
-                    return_is_group=True,
-                )
+                # 用线程+超时防止 pyweixin 卡死
+                result = [None, None]
+                exc = [None]
+                def _open():
+                    try:
+                        dw, is_group = self._Navigator.open_seperate_dialog_window(
+                            friend=chat, window_minimize=False, close_weixin=False,
+                            return_is_group=True,
+                        )
+                        result[0] = dw
+                        result[1] = is_group
+                    except Exception as e:
+                        exc[0] = e
+                t = threading.Thread(target=_open, daemon=True)
+                t.start()
+                t.join(timeout=60)
+                if t.is_alive():
+                    logger.warning("打开窗口 [%s] 超时(60s)，跳过", chat)
+                    continue
+                if exc[0] is not None:
+                    raise exc[0]
+                dw, is_group = result[0], result[1]
+                logger.info("打开窗口成功: [%s]", chat)
                 # 优先使用 Adapter 的群聊信息（比 pyweixin 自动检测更准确）
                 if chat in self._adapter_group_list:
                     is_group = True
@@ -373,6 +357,14 @@ class WeChatListener:
         logger.info("已打开 %d 个独立窗口", opened)
 
     def _global_scan(self, Navigator, Monitor) -> None:
+        if self._include_muted:
+            # 包含免打扰的完整扫描
+            self._global_scan_all(Navigator, Monitor)
+        else:
+            self._global_scan_normal(Navigator, Monitor)
+
+    def _global_scan_normal(self, Navigator, Monitor) -> None:
+        """常规扫描：跳过免打扰聊天"""
         from pyweixin.utils import scan_for_new_messages
         try:
             result = scan_for_new_messages(close_weixin=False)
@@ -382,37 +374,113 @@ class WeChatListener:
                 if chat_name in self._excluded:
                     continue
                 if chat_name in self._dialog_windows:
-                    continue  # 已监控的不重复处理
+                    logger.debug("全局扫描跳过(已在监控): %s", chat_name)
+                    continue
                 if count > 0:
                     logger.info("全局扫描发现: [%s] %d 条新消息", chat_name, count)
-                    try:
-                        dw, is_group = Navigator.open_seperate_dialog_window(
-                            friend=chat_name, window_minimize=False, close_weixin=False,
-                            return_is_group=True,
-                        )
-                        if chat_name in self._adapter_group_list:
-                            is_group = True
-                        self._chat_group_status[chat_name] = is_group
-                        self._dialog_windows[chat_name] = dw
-                        logger.info("已将 [%s] 加入监控列表", chat_name)
-                        # 群聊则激活多选
-                        if is_group:
-                            for retry in range(5):
-                                try:
-                                    time.sleep(0.3)
-                                    if self._activate_multiselect(chat_name, dw):
-                                        break
-                                except Exception:
-                                    pass
-                                time.sleep(1.5)
-                        # 读取最后几条消息
-                        self._read_last_message(dw, chat_name)
-                    except Exception as e:
-                        logger.debug("全局扫描读取 [%s] 失败: %s", chat_name, e)
+                    self._open_and_monitor_new_chat(Navigator, chat_name)
         except Exception as e:
             logger.debug("全局扫描异常: %s", e)
-        # 扫描完后归位会话列表
         self._type_home_on_session_list()
+
+    def _global_scan_all(self, Navigator, Monitor) -> None:
+        """完整扫描：扫所有有未读消息的聊天（含免打扰），不点按钮不抢焦点"""
+        try:
+            from pyweixin.Uielements import Main_window, SideBar, Regex_Patterns
+            mw = getattr(self, '_main_window', None)
+            logger.info("全局扫描(全) 开始")
+            if not mw:
+                mw = Navigator.open_weixin(is_maximize=False)
+            if not mw:
+                return
+            sl = mw.child_window(**Main_window.SessionList)
+            if not sl.exists(timeout=0.5):
+                logger.info("全局扫描(全) 找不到会话列表")
+                return
+            sl.type_keys('{HOME}')
+            mute_pattern = Regex_Patterns.newMessage_pattern
+            found = {}
+            for page in range(40):
+                try:
+                    items = sl.children(control_type="ListItem")
+                except Exception:
+                    items = []
+                if not items:
+                    logger.info("全局扫描(全) 第%d页无ListItem", page)
+                    break
+                logger.info("全局扫描(全) 第%d页有%d个ListItem", page, len(items))
+                if page == 0 and items:
+                    logger.info("全局扫描(全) 首个ListItem文本: %r", items[0].window_text())
+                for li in items:
+                    text = li.window_text()
+                    m = mute_pattern.search(text)
+                    if m:
+                        sender = li.automation_id().replace('session_item_', '')
+                        found[sender] = m.group(1)
+                # 尝试翻页
+                try:
+                    last_text = items[-1].window_text()
+                    sl.type_keys('{PGDN}')
+                    import time as _t
+                    _t.sleep(0.1)
+                    if items[-1].window_text() == last_text:
+                        break
+                except Exception:
+                    break
+                for li in items:
+                    text = li.window_text()
+                    m = mute_pattern.search(text)
+                    if not m:
+                        continue
+                    sender = li.automation_id().replace('session_item_', '')
+                    found[sender] = m.group(1)
+                last_text = items[-1].window_text()
+                sl.type_keys('{PGDN}')
+                if items[-1].window_text() == last_text:
+                    break
+            sl.type_keys('{HOME}')
+            logger.info("全局扫描(全) 找到 %d 个有未读的聊天", len(found))
+            for chat_name in found:
+                if chat_name in self._excluded:
+                    continue
+                if chat_name in self._dialog_windows:
+                    logger.debug("全局扫描(全)跳过(已在监控): %s", chat_name)
+                    continue
+                logger.info("全局扫描发现: [%s]", chat_name)
+                self._open_and_monitor_new_chat(Navigator, chat_name)
+            if not found:
+                logger.info("全局扫描(全) 未发现新聊天")
+        except Exception as e:
+            logger.warning("全局扫描(全) 异常: %s", e)
+        self._type_home_on_session_list()
+        self._type_home_on_session_list()
+        self._type_home_on_session_list()
+
+    def _open_and_monitor_new_chat(self, Navigator, chat_name: str) -> None:
+        try:
+            dw, is_group = Navigator.open_seperate_dialog_window(
+                friend=chat_name, window_minimize=False, close_weixin=False,
+                return_is_group=True,
+            )
+            if chat_name in self._adapter_group_list:
+                is_group = True
+            self._chat_group_status[chat_name] = is_group
+            self._dialog_windows[chat_name] = dw
+            logger.info("已将 [%s] 加入监控列表", chat_name)
+            # 群聊则激活多选
+            if is_group:
+                for retry in range(5):
+                    try:
+                        time.sleep(0.3)
+                        if self._activate_multiselect(chat_name, dw):
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(1.5)
+            # 读取最后几条消息
+            self._read_last_message(dw, chat_name)
+        except Exception as e:
+            logger.debug("全局扫描读取 [%s] 失败: %s", chat_name, e)
 
     def _type_home_on_session_list(self):
         """将主窗口的会话列表滚回顶部"""

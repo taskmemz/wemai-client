@@ -8,6 +8,7 @@ target_chats = []
 excluded = ["文件传输助手", "微信团队", "微信支付"]
 send_delay = 0.2
 close_weixin = false
+include_muted = true
 
 [wechat.group_members]
 # "群聊名称1" = ["成员A", "成员B"]

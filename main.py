@@ -73,6 +73,7 @@ class WeMaiClient:
             send_delay=self._cfg.wechat.send_delay,
             on_message=self._on_wechat_message,
             group_members=self._cfg.wechat.group_members,
+            include_muted=self._cfg.wechat.include_muted,
         )
         self._listener = listener
         
