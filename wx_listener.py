@@ -145,6 +145,7 @@ class WeChatListener:
         on_message: Optional[Callable[[dict], None]] = None,
         group_members: Optional[dict[str, list[str]]] = None,
         include_muted: bool = False,
+        on_friend_request: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self._target_chats = list(target_chats)
         self._excluded = set(excluded)
@@ -152,6 +153,7 @@ class WeChatListener:
         self._close_weixin = close_weixin
         self._send_delay = send_delay
         self._on_message = on_message
+        self._on_friend_request = on_friend_request
         self._include_muted = include_muted
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -166,10 +168,14 @@ class WeChatListener:
         self._chat_group_status: dict[str, bool] = {}
         # 群成员列表，key=聊天名称 value=成员昵称列表
         self._chat_group_members: dict[str, list[str]] = group_members or {}
-        # Adapter 明确告知的群聊名称集合（比 pyweixin 自动检测更可靠）
+        # Adapter 明确告知的群聊名称集合（比 pyweixin 自动检测更准确）
         self._adapter_group_list: set[str] = set()
         # 每个聊天上一次实际发出的消息 (sender, content)，用于拦截撤回导致的 runtime_id 漂移
         self._last_msg: dict[str, tuple[str, str]] = {}
+        # 好友请求回调
+        self._on_friend_request: Optional[Callable[[dict], None]] = None
+        # 上次检查好友的时间
+        self._last_friend_check: float = 0.0
 
     def start(self) -> None:
         self._running = True
@@ -358,10 +364,30 @@ class WeChatListener:
 
     def _global_scan(self, Navigator, Monitor) -> None:
         if self._include_muted:
-            # 包含免打扰的完整扫描
             self._global_scan_all(Navigator, Monitor)
         else:
             self._global_scan_normal(Navigator, Monitor)
+        self._check_new_friends()
+
+    def _check_new_friends(self) -> None:
+        """检查新的朋友请求"""
+        now = time.time()
+        if now - self._last_friend_check < 60:
+            return
+        self._last_friend_check = now
+        try:
+            from pyweixin import Contacts
+            new_friends = Contacts.check_new_friends(verify=False, limit=8, clear=False)
+            if new_friends and self._on_friend_request:
+                for detail in new_friends:
+                    logger.info("检测到好友请求: %s", detail)
+                    self._on_friend_request({
+                        "type": "friend_request",
+                        "content": detail[:200],
+                        "details": detail,
+                    })
+        except Exception as e:
+            logger.debug("检查好友请求异常: %s", e)
 
     def _global_scan_normal(self, Navigator, Monitor) -> None:
         """常规扫描：跳过免打扰聊天"""

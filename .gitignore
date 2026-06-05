@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# Screenshots
+screenshots/
+
+# Local config (user-specific)
+config.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test artifacts
+test/saved_images/

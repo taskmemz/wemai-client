@@ -74,6 +74,7 @@ class WeMaiClient:
             on_message=self._on_wechat_message,
             group_members=self._cfg.wechat.group_members,
             include_muted=self._cfg.wechat.include_muted,
+            on_friend_request=self._on_friend_request,
         )
         self._listener = listener
         
@@ -159,6 +160,17 @@ class WeMaiClient:
                 "发送到 Adapter %s", "成功" if f.result() else "失败"
             ))
 
+    def _on_friend_request(self, msg: dict) -> None:
+        logger.info("好友请求: %s", msg.get("content", ""))
+        if self._loop is not None and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                self._ws.send_inbound(msg),
+                self._loop,
+            )
+            future.add_done_callback(lambda f: logger.info(
+                "好友请求发送到 Adapter %s", "成功" if f.result() else "失败"
+            ))
+
     def _on_plugin_outbound(self, msg: dict) -> None:
         msg_type = msg.get("type", "")
         if msg_type == "ack":
@@ -169,6 +181,18 @@ class WeMaiClient:
         # 朋友圈命令处理
         if msg_type in ("moment_read", "moment_post"):
             self._handle_moment_command(msg)
+            return
+
+        if msg_type == "friend_approve":
+            friend_name = msg.get("friend_name", "")
+            if friend_name:
+                logger.info("收到好友批准指令: %s", friend_name)
+                try:
+                    from pyweixin import Contacts
+                    Contacts.check_new_friends(verify=True, limit=1, clear=False)
+                    logger.info("好友申请已验证: %s", friend_name)
+                except Exception as e:
+                    logger.warning("验证好友失败: %s", e)
             return
 
         receiver = msg.get("receiver", "")

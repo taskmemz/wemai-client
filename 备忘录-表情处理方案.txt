@@ -1,0 +1,14 @@
+微信4.0 动画表情获取方案（待实现）
+====================================
+
+问题：表情的 ChatBubbleReferItemView 没有 UIA 子控件，
+无法通过点击 → 保存拿到文件。缓存扫描不可靠。
+
+方案：精确截图裁切
+1. 取 ListItem 的 rectangle (L,T,R,B)
+2. pyautogui.screenshot(region=rect)
+3. PIL/numpy 找非背景色最小包围框
+4. 裁切 → base64 → 发送
+
+现状：图片保存已用 pyweixin save_media 实现。
+表情需待截图方案验证。
