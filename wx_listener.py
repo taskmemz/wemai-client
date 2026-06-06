@@ -11,95 +11,12 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("wemai_client.listener")
 
 
-def _save_chat_media(chat: str, msg_type: str) -> str | None:
-    """用 pyweixin 保存聊天中的最新图片到临时目录，返回文件路径"""
-    global _LATEST_MEDIA_FILE
-    try:
-        import tempfile
-        from pyweixin import Messages, GlobalConfig
-        target = tempfile.mkdtemp(prefix="wemai_media_")
-        GlobalConfig.close_weixin = False
-        Messages.save_media(friend=chat, number=1, target_folder=target)
-        images_dir = os.path.join(target, "Images")
-        if os.path.isdir(images_dir):
-            files = sorted(os.listdir(images_dir), key=lambda f: os.path.getmtime(os.path.join(images_dir, f)), reverse=True)
-            for fname in files:
-                fpath = os.path.join(images_dir, fname)
-                if fpath == _LATEST_MEDIA_FILE:
-                    continue
-                if _detect_image_type_static(fpath):
-                    _LATEST_MEDIA_FILE = fpath
-                    return fpath
-        return None
-    except Exception as e:
-        logger.warning("保存聊天媒体失败: %s", e)
-        return None
-
-
-def _find_latest_emoticon() -> str | None:
-    """从微信缓存中查找最新收到的动画表情/GIF，返回文件路径"""
-    global _LATEST_MEDIA_FILE
-    try:
-        from pyweixin import Tools
-        wxid = Tools.where_wxid_folder()
-        logger.info("表情查找: wxid=%s", wxid)
-        if not wxid:
-            return None
-        candidates = []
-        emoticon_dirs = [
-            os.path.join(wxid, "FileStorage", "CustomEmotion"),
-            os.path.join(wxid, "FileStorage", "Image"),
-            os.path.join(wxid, "cache"),
-            os.path.join(wxid, "Msg", "file"),
-        ]
-        now = time.time()
-        for base in emoticon_dirs:
-            if not os.path.isdir(base):
-                logger.info("表情查找: 目录不存在 %s", base)
-                continue
-            logger.info("表情查找: 扫描 %s", base)
-            file_count = 0
-            for root, dirs, files in os.walk(base):
-                dirs[:] = [d for d in dirs if d.lower() not in ("thumb", "temp", "head_image", "bubble", "sns", "weappicon")]
-                for f in files:
-                    fpath = os.path.join(root, f)
-                    if fpath == _LATEST_MEDIA_FILE:
-                        continue
-                    try:
-                        mtime = os.path.getmtime(fpath)
-                        size = os.path.getsize(fpath)
-                    except OSError:
-                        continue
-                    if size < 1024 or now - mtime > 60:
-                        continue
-                    ext = os.path.splitext(f)[1].lower()
-                    # 有扩展名: 直接匹配图片后缀; 无扩展名: 魔数检测
-                    if ext in (".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-                        candidates.append((fpath, mtime))
-                        file_count += 1
-                    elif ext == "" and _detect_image_type_static(fpath):
-                        candidates.append((fpath, mtime))
-                        file_count += 1
-            logger.info("表情查找: %s 找到 %d 个候选", base, file_count)
-        logger.info("表情查找: 共 %d 个候选", len(candidates))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        result = candidates[0][0]
-        logger.info("表情查找: 选中 %s", result)
-        _LATEST_MEDIA_FILE = result
-        return result
-    except Exception as e:
-        logger.warning("表情查找异常: %s", e)
-        return None
 
 
 _KNOWN_IDS: set[str] = set()
 _KNOWN_LOCK = threading.Lock()
 
 # 最近一次已发送的媒体文件路径，防止重复拿同一个文件
-_LATEST_MEDIA_FILE: str = ""
-
 
 def _dedup_key(chat: str, sender: str, content: str) -> str:
     raw = f"{chat}|{sender}|{content}"
@@ -115,23 +32,6 @@ def _is_known(key: str) -> bool:
             _KNOWN_IDS.clear()
         return False
 
-
-def _detect_image_type_static(path: str) -> str | None:
-    """从文件头检测真实图片类型，不依赖扩展名"""
-    try:
-        with open(path, "rb") as f:
-            header = f.read(8)
-        if header.startswith(b'\x89PNG\r\n\x1a\n'):
-            return '.png'
-        if header.startswith(b'\xff\xd8'):
-            return '.jpg'
-        if header.startswith(b'GIF87a') or header.startswith(b'GIF89a'):
-            return '.gif'
-        if header.startswith(b'RIFF'):
-            return '.webp'
-        return None
-    except Exception:
-        return None
 
 
 class WeChatListener:
@@ -412,7 +312,7 @@ class WeChatListener:
     def _global_scan_all(self, Navigator, Monitor) -> None:
         """完整扫描：扫所有有未读消息的聊天（含免打扰），不点按钮不抢焦点"""
         try:
-            from pyweixin.Uielements import Main_window, SideBar, Regex_Patterns
+            from pyweixin.Uielements import Main_window, SideBar
             mw = getattr(self, '_main_window', None)
             logger.info("全局扫描(全) 开始")
             if not mw:
@@ -424,7 +324,8 @@ class WeChatListener:
                 logger.info("全局扫描(全) 找不到会话列表")
                 return
             sl.type_keys('{HOME}')
-            mute_pattern = Regex_Patterns.newMessage_pattern
+            import re as _re
+            mute_pattern = _re.compile(r'\n\[(\d+)条\]|\n\[(\d+)\]')
             found = {}
             for page in range(40):
                 try:
@@ -549,15 +450,56 @@ class WeChatListener:
             else:
                 msg_type, sender, content, is_group = self._parse_message(chat_name, text, is_group=is_group)
             if content:
-                if msg_type == "image":
-                    media_path = _save_chat_media(chat_name, msg_type) or ""
-                elif msg_type == "emoji":
-                    media_path = _find_latest_emoticon() or ""
-                else:
-                    media_path = ""
-                media_base64 = self._file_to_base64(media_path) if media_path else ""
-                detected = self._detect_image_type(media_path) if media_path else None
-                media_ext = detected or os.path.splitext(media_path)[1] or ".png" if media_path else ""
+                media_path = ""
+                media_base64 = ""
+                media_ext = ""
+                if msg_type == "emoji" and item is items[-1]:
+                    try:
+                        try:
+                            dw.set_focus()
+                            time.sleep(0.5)
+                        except Exception:
+                            pass
+                        w_rect = dw.element_info.rectangle
+                        from PIL import ImageGrab
+                        import base64
+                        import io as _io
+                        full = ImageGrab.grab(bbox=(w_rect.left, w_rect.top, w_rect.right, w_rect.bottom))
+                        item_rect = None
+                        try:
+                            items = chat_list.children(control_type="ListItem")
+                            if items:
+                                item_rect = items[-1].element_info.rectangle
+                            else:
+                                cbs = chat_list.children(control_type="CheckBox")
+                                if cbs:
+                                    item_rect = cbs[-1].element_info.rectangle
+                        except Exception:
+                            pass
+                        if item_rect:
+                            crop_rect = (
+                                item_rect.left - w_rect.left,
+                                item_rect.top - w_rect.top,
+                                item_rect.right - w_rect.left,
+                                item_rect.bottom - w_rect.top
+                            )
+                            cropped = full.crop(crop_rect)
+                        else:
+                            cropped = full
+                        buf = _io.BytesIO()
+                        cropped.save(buf, format="PNG")
+                        media_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                        media_ext = ".png"
+                        try:
+                            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+                            os.makedirs(save_dir, exist_ok=True)
+                            ts = int(time.time())
+                            local_path = os.path.join(save_dir, f"{msg_type}_{chat_name}_{ts}.png")
+                            cropped.save(local_path)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
                 self._emit(chat_name, sender, content, is_group, msg_type, media_path, media_base64, media_ext)
 
     def _open_pending_windows(self) -> None:
@@ -661,20 +603,82 @@ class WeChatListener:
             return
         self._last_msg[chat_name] = cur
 
-        # 动画表情/图片尝试从 WeChat 文件目录找到实际文件
+        # 图片/表情获取
         media_path = ""
         media_base64 = ""
         media_ext = ""
-        if msg_type == "image":
-            media_path = _save_chat_media(chat_name, msg_type) or ""
-        elif msg_type == "emoji":
-            media_path = _find_latest_emoticon() or ""
-            if media_path:
-                logger.info("找到媒体文件: %s", media_path)
-                # .dat 文件从头部检测真实类型
-                detected = self._detect_image_type(media_path)
-                media_ext = detected or os.path.splitext(media_path)[1] or ".png"
-                media_base64 = self._file_to_base64(media_path)
+        if msg_type == "emoji":
+            # 表情：截图（UIA 无子控件可取文件）
+            try:
+                try:
+                    dw.set_focus()
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+                w_rect = dw.element_info.rectangle
+                from PIL import ImageGrab
+                import base64
+                import io as _io
+                full = ImageGrab.grab(bbox=(w_rect.left, w_rect.top, w_rect.right, w_rect.bottom))
+                item_rect = None
+                try:
+                    items = chat_list.children(control_type="ListItem")
+                    if items:
+                        item_rect = items[-1].element_info.rectangle
+                    else:
+                        cbs = chat_list.children(control_type="CheckBox")
+                        if cbs:
+                            item_rect = cbs[-1].element_info.rectangle
+                except Exception:
+                    pass
+                if item_rect:
+                    crop_rect = (
+                        item_rect.left - w_rect.left,
+                        item_rect.top - w_rect.top,
+                        item_rect.right - w_rect.left,
+                        item_rect.bottom - w_rect.top
+                    )
+                    cropped = full.crop(crop_rect)
+                else:
+                    cropped = full
+                buf = _io.BytesIO()
+                cropped.save(buf, format="PNG")
+                media_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                media_ext = ".png"
+                try:
+                    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+                    os.makedirs(save_dir, exist_ok=True)
+                    ts = int(time.time())
+                    local_path = os.path.join(save_dir, f"{msg_type}_{chat_name}_{ts}.png")
+                    cropped.save(local_path)
+                    logger.info("截图已本地保存: %s", local_path)
+                except Exception:
+                    pass
+                logger.info("截图成功: %dx%d -> base64=%d bytes",
+                            cropped.width, cropped.height, len(media_base64))
+            except Exception as e:
+                logger.warning("截图失败: %s", e)
+        elif msg_type == "image":
+            # 图片：用 pyweixin 保存原文件
+            try:
+                from pyweixin import Messages, GlobalConfig
+                import tempfile
+                import base64
+                target = tempfile.mkdtemp(prefix="wemai_img_")
+                GlobalConfig.close_weixin = False
+                Messages.save_media(friend=chat_name, number=1, target_folder=target)
+                for root, dirs, files in os.walk(target):
+                    for f in files:
+                        fpath = os.path.join(root, f)
+                        with open(fpath, "rb") as _fb:
+                            raw = _fb.read()
+                        if len(raw) > 1024:
+                            media_base64 = base64.b64encode(raw).decode("utf-8")
+                            media_ext = os.path.splitext(f)[1] or ".png"
+                            logger.info("图片已保存: %s (%d bytes)", fpath, len(raw))
+                            break
+            except Exception as e:
+                logger.warning("图片保存失败: %s", e)
 
         logger.info("检测到 [%s] %s: %s (%s)", chat_name, sender, content[:60], msg_type)
         self._emit(chat_name, sender, content, is_group, msg_type, media_path, media_base64, media_ext)
@@ -686,7 +690,7 @@ class WeChatListener:
         image_labels = ("[图片]", "图片", "[Image]", "Image", "[圖片]", "圖片")
         video_labels = ("[视频]", "视频", "[Video]", "Video", "[影片]", "影片")
 
-        if any(text.strip() == l for l in emoji_labels):
+        if any(text.strip().startswith(l) for l in emoji_labels):
             return "emoji", chat_name, "[动画表情]", False
 
         if any(text.strip().startswith(l) for l in image_labels):
@@ -880,7 +884,7 @@ class WeChatListener:
 
         # 从 content 检测特殊消息类型
         ct = content.strip()
-        if any(ct == l for l in emoji_labels):
+        if any(ct.startswith(l) for l in emoji_labels):
             msg_type = "emoji"
         elif any(ct.startswith(l) for l in image_labels):
             msg_type = "image"
