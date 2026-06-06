@@ -79,8 +79,43 @@ class WeChatSender:
         GlobalConfig.send_delay = self._send_delay
         has_at = bool(at_members)
         for seg in segments:
+            stype = seg.get("type", "text")
             sdata = seg.get("data", "")
             if not sdata:
+                continue
+            if stype == "image":
+                # GIF/图片：复制到剪贴板后粘贴发送
+                try:
+                    import base64, os, tempfile
+                    raw = base64.b64decode(sdata)
+                    ext = ".gif" if raw[:3] == b"GIF" else ".png"
+                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                    tmp.write(raw)
+                    tmp.close()
+                    from PIL import Image
+                    import win32clipboard
+                    from io import BytesIO
+                    img = Image.open(tmp.name)
+                    output = BytesIO()
+                    img.convert("RGBA").save(output, format="PNG")
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, output.getvalue())
+                    win32clipboard.CloseClipboard()
+                    dw = self._dialog_windows.get(receiver)
+                    if dw:
+                        try:
+                            dw.set_focus()
+                            time.sleep(0.2)
+                        except Exception:
+                            pass
+                    import pyautogui
+                    pyautogui.hotkey("ctrl", "v", _pause=False)
+                    time.sleep(0.3)
+                    pyautogui.hotkey("enter", _pause=False)
+                    logger.info("→ clipboard [%s] [图片] (%d bytes)", receiver, len(raw))
+                except Exception as e:
+                    logger.warning("发送图片失败 [%s]: %s", receiver, e)
                 continue
             # 有 @ 高亮时去掉文本中的 @name，避免微信里重复显示
             if has_at and sdata.startswith("@"):
@@ -88,7 +123,7 @@ class WeChatSender:
                 clean = sdata
                 for name in at_members:
                     clean = clean.replace(f"@{name}", "").strip()
-                sdata = clean or sdata  # 如果清空后没内容了，保留原文本
+                sdata = clean or sdata
             else:
                 seg_at = []
             Messages.send_messages_to_friend(
