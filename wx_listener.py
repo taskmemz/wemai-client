@@ -6,17 +6,12 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger("wemai_client.listener")
 
-
-
-
 _KNOWN_IDS: set[str] = set()
 _KNOWN_LOCK = threading.Lock()
-
-# 最近一次已发送的媒体文件路径，防止重复拿同一个文件
 
 def _dedup_key(chat: str, sender: str, content: str) -> str:
     raw = f"{chat}|{sender}|{content}"
@@ -33,7 +28,6 @@ def _is_known(key: str) -> bool:
         return False
 
 
-
 class WeChatListener:
     def __init__(
         self,
@@ -42,10 +36,10 @@ class WeChatListener:
         poll_interval: float,
         close_weixin: bool,
         send_delay: float,
-        on_message: Optional[Callable[[dict], None]] = None,
-        group_members: Optional[dict[str, list[str]]] = None,
+        on_message: Callable[[dict], None] | None = None,
+        group_members: dict[str, list[str]] | None = None,
         include_muted: bool = False,
-        on_friend_request: Optional[Callable[[dict], None]] = None,
+        on_friend_request: Callable[[dict], None] | None = None,
     ) -> None:
         self._target_chats = list(target_chats)
         self._excluded = set(excluded)
@@ -56,7 +50,7 @@ class WeChatListener:
         self._on_friend_request = on_friend_request
         self._include_muted = include_muted
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._dialog_windows: dict[str, Any] = {}
         self._my_name = ""
         self._last_seen: dict[str, Any] = {}
@@ -72,8 +66,6 @@ class WeChatListener:
         self._adapter_group_list: set[str] = set()
         # 每个聊天上一次实际发出的消息 (sender, content)，用于拦截撤回导致的 runtime_id 漂移
         self._last_msg: dict[str, tuple[str, str]] = {}
-        # 好友请求回调
-        self._on_friend_request: Optional[Callable[[dict], None]] = None
         # 上次检查好友的时间
         self._last_friend_check: float = 0.0
 

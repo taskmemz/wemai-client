@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger("wemai_client.ws")
 
@@ -13,11 +13,11 @@ class WsPluginClient:
         self._host = host
         self._port = port
         self._reconnect_delay = reconnect_delay
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._connected = False
-        self._on_outbound: Optional[Callable[[dict[str, Any]], None]] = None
-        self._on_config: Optional[Callable[[dict[str, Any]], None]] = None
+        self._on_outbound: Callable[[dict[str, Any]], None] | None = None
+        self._on_config: Callable[[dict[str, Any]], None] | None = None
         self._should_run = True
 
     def set_outbound_handler(self, handler: Callable[[dict[str, Any]], None]) -> None:

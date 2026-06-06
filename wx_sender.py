@@ -4,7 +4,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger("wemai_client.sender")
 
@@ -20,10 +20,10 @@ class WeChatSender:
         self._send_delay = send_delay
         self._close_weixin = close_weixin
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._dialog_windows: dict[str, Any] = {}
-        self._on_post_send: Optional[Callable[[str], None]] = None
-        self._on_pre_send: Optional[Callable[[str], None]] = None
+        self._on_post_send: Callable[[str], None] | None = None
+        self._on_pre_send: Callable[[str], None] | None = None
 
     def set_dialog_windows(self, d: dict[str, Any]) -> None:
         self._dialog_windows = d

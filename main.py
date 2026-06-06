@@ -7,7 +7,7 @@ import queue
 import signal
 import sys
 import threading
-from typing import Optional
+
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -53,7 +53,7 @@ class WeMaiClient:
             send_delay=cfg.wechat.send_delay,
             close_weixin=cfg.wechat.close_weixin,
         )
-        self._listener: Optional[WeChatListener] = None
+        self._listener: WeChatListener | None = None
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
