@@ -97,7 +97,7 @@ file = "wemai-client.log"
 
 ## 依赖项目
 
-- [pyweixin](https://github.com/taskmemz/pyweixin) — 微信 UIA 自动化封装库（已 vendored 在 `pyweixin/` 目录中）
+- [pyweixin](https://github.com/Hello-Mr-Crab/pywechat) — 微信 UIA 自动化封装库（已 vendored 在 `pyweixin/` 目录中）
 
 ## 与 Adapter 的关系
 
