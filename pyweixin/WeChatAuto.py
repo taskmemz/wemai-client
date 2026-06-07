@@ -1414,7 +1414,8 @@ class Contacts():
         #新的朋友联系人分区
         newfriend_item=main_window.child_window(**ListItems.NewFriendListItem)
         if not newfriend_item.exists(timeout=0.1):
-            print(f'你没有新的朋友,无法获取新的朋友信息!')
+            import logging
+            logging.getLogger('pyweixin.Contacts').debug('没有新的朋友请求')
         if newfriend_item.exists(timeout=0.1):
             newfriend_item.click_input()
             contact_list.type_keys('{END}')
@@ -2768,7 +2769,6 @@ class Moments():
         contain_image_pattern=Regex_Patterns.Contain_Images_pattern#朋友圈包含1~9张图片
         not_contents=['mmui::TimelineCommentCell','mmui::TimelineCell','mmui::TimelineAdGridImageCell','mmui::TimelineAdBaseCardImageCell']#评论区，余下x条,广告,这三种不需要
         moments_window=Navigator.open_moments(is_maximize=is_maximize,close_weixin=close_weixin)
-        win32gui.SendMessage(moments_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
         Tools.cancel_pin(moments_window)
         image_preview_window=desktop.window(**Windows.ImagePreviewWindow)
         profile_window=desktop.window(**Windows.PopUpProfileWindow)
@@ -3046,8 +3046,6 @@ class Moments():
         image_preview_window=desktop.window(**Windows.ImagePreviewWindow)
         moments_window=Navigator.open_friend_moments(friend=friend,is_maximize=is_maximize,close_weixin=close_weixin,search_pages=search_pages)
         backbutton=moments_window.child_window(**Buttons.BackButton)
-        #直接maximize不行,需要使用win32gui
-        win32gui.SendMessage(moments_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
         moments_list=moments_window.child_window(**Lists.MomentsList)
         sns_detail_list=moments_window.child_window(**Lists.SnsDetailList)
         moments_list.type_keys('{PGDN}')
@@ -3148,8 +3146,6 @@ class Moments():
         not_contents=['mmui::AlbumBaseCell','mmui::AlbumTopCell']#置顶内容不需要
         moments_window=Navigator.open_friend_moments(friend=friend,is_maximize=is_maximize,close_weixin=close_weixin)
         backbutton=moments_window.child_window(**Buttons.BackButton)
-        #直接maximize不行,需要使用win32gui
-        win32gui.SendMessage(moments_window.handle,win32con.WM_SYSCOMMAND,win32con.SC_MAXIMIZE,0)
         moments_list=moments_window.child_window(**Lists.MomentsList)
         sns_detail_list=moments_window.child_window(**Lists.SnsDetailList)
         like_button=moments_window.child_window(**Buttons.LikeButton)

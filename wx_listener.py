@@ -40,6 +40,7 @@ class WeChatListener:
         group_members: dict[str, list[str]] | None = None,
         include_muted: bool = False,
         on_friend_request: Callable[[dict], None] | None = None,
+        admin_chats: list[str] | None = None,
     ) -> None:
         self._target_chats = list(target_chats)
         self._excluded = set(excluded)
@@ -49,6 +50,7 @@ class WeChatListener:
         self._on_message = on_message
         self._on_friend_request = on_friend_request
         self._include_muted = include_muted
+        self._admin_chats = set(admin_chats or [])
         self._running = False
         self._thread: threading.Thread | None = None
         self._dialog_windows: dict[str, Any] = {}
@@ -261,6 +263,8 @@ class WeChatListener:
             self._global_scan_normal(Navigator, Monitor)
         self._check_new_friends()
 
+    _SEEN_FRIEND: set[str] = set()
+
     def _check_new_friends(self) -> None:
         """检查新的朋友请求"""
         now = time.time()
@@ -270,13 +274,22 @@ class WeChatListener:
         try:
             from pyweixin import Contacts
             new_friends = Contacts.check_new_friends(verify=False, limit=8, clear=False)
-            if new_friends and self._on_friend_request:
-                for detail in new_friends:
+            if not new_friends:
+                return
+            for detail in new_friends:
+                if detail in self._SEEN_FRIEND:
+                    logger.debug("好友请求已处理过，跳过: %s", detail)
+                    continue
+                self._SEEN_FRIEND.add(detail)
+                if len(self._SEEN_FRIEND) > 1000:
+                    self._SEEN_FRIEND.clear()
+                if self._on_friend_request:
                     logger.info("检测到好友请求: %s", detail)
                     self._on_friend_request({
                         "type": "friend_request",
                         "content": detail[:200],
                         "details": detail,
+                        "admin_chats": list(self._admin_chats),
                     })
         except Exception as e:
             logger.debug("检查好友请求异常: %s", e)

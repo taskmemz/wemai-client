@@ -75,6 +75,7 @@ class WeMaiClient:
             group_members=self._cfg.wechat.group_members,
             include_muted=self._cfg.wechat.include_muted,
             on_friend_request=self._on_friend_request,
+            admin_chats=self._cfg.wechat.admin_chats,
         )
         self._listener = listener
         
@@ -193,6 +194,18 @@ class WeMaiClient:
                     logger.info("好友申请已验证: %s", friend_name)
                 except Exception as e:
                     logger.warning("验证好友失败: %s", e)
+            return
+
+        if msg_type == "friend_dismiss":
+            friend_name = msg.get("friend_name", "")
+            if friend_name:
+                logger.info("收到好友忽略指令: %s", friend_name)
+                try:
+                    from pyweixin import Contacts
+                    Contacts.check_new_friends(verify=False, limit=8, clear=True)
+                    logger.info("好友请求已清除: %s", friend_name)
+                except Exception as e:
+                    logger.warning("清除好友请求失败: %s", e)
             return
 
         receiver = msg.get("receiver", "")

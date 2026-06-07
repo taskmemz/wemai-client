@@ -74,7 +74,7 @@ class WeChatSender:
             self._on_post_send(receiver)
 
     def _do_send_via_pyweixin(self, receiver: str, segments: list, at_members: list | None = None) -> None:
-        from pyweixin import GlobalConfig, Messages
+        from pyweixin import GlobalConfig, Files, Messages
         GlobalConfig.close_weixin = self._close_weixin
         GlobalConfig.send_delay = self._send_delay
         has_at = bool(at_members)
@@ -84,7 +84,7 @@ class WeChatSender:
             if not sdata:
                 continue
             if stype == "image":
-                # GIF/图片：复制到剪贴板后粘贴发送
+                # GIF/图片：保存到临时文件后通过 pyweixin 文件发送
                 try:
                     import base64, os, tempfile
                     raw = base64.b64decode(sdata)
@@ -92,28 +92,19 @@ class WeChatSender:
                     tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
                     tmp.write(raw)
                     tmp.close()
-                    from PIL import Image
-                    import win32clipboard
-                    from io import BytesIO
-                    img = Image.open(tmp.name)
-                    output = BytesIO()
-                    img.convert("RGBA").save(output, format="PNG")
-                    win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, output.getvalue())
-                    win32clipboard.CloseClipboard()
-                    dw = self._dialog_windows.get(receiver)
-                    if dw:
-                        try:
-                            dw.set_focus()
-                            time.sleep(0.2)
-                        except Exception:
-                            pass
-                    import pyautogui
-                    pyautogui.hotkey("ctrl", "v", _pause=False)
-                    time.sleep(0.3)
-                    pyautogui.hotkey("enter", _pause=False)
-                    logger.info("→ clipboard [%s] [图片] (%d bytes)", receiver, len(raw))
+                    GlobalConfig.close_weixin = self._close_weixin
+                    GlobalConfig.send_delay = self._send_delay
+                    Files.send_files_to_friend(
+                        friend=receiver,
+                        files=[tmp.name],
+                        with_messages=False,
+                        close_weixin=False,
+                    )
+                    logger.info("→ pyweixin [%s] [图片] (%d bytes)", receiver, len(raw))
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.warning("发送图片失败 [%s]: %s", receiver, e)
                 continue
