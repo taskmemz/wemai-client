@@ -7,16 +7,18 @@
 **WeMai Client** 运行在你的 Windows 电脑上，它会：
 1. 连接远端的 **WeMai Adapter** 的 WebSocket
 2. 操控本机微信 GUI（通过 UIA 自动化）读取消息、发送消息、读写朋友圈
-3. 把微信里的新消息实时推给 Adapter，同时接收 Adapter 发来的回复并打字发送
+3. 把微信里的新消息实时推给 Adapter，同时接收 Adapter 发来的回复并打字/粘贴发送
+4. 自动检测好友请求并上报，等待 LLM 决策后批准或忽略
+5. 语音消息自动右键 → "语音转文字" → 以 `[语音]xxx` 形式送达 LLM
 
 ## 功能
 
 | 模块 | 职责 |
 |---|---|
 | `main.py` | 入口，组件组装与生命周期管理 |
-| `ws_client.py` | TCP 长连接，4 字节长度前缀 JSON 协议，断线自动重连 |
+| `ws_client.py` | TCP 长连接，4 字节长度前缀 JSON 协议，渐进退避重连 |
 | `wx_listener.py` | 打开独立聊天窗口，轮询新消息，多选模式提取发送人 |
-| `wx_sender.py` | 消费出站队列，向微信窗口打字/粘贴发送 |
+| `wx_sender.py` | 消费出站队列，向微信窗口打字/文件发送 |
 | `wx_moments.py` | 读取/发布朋友圈 |
 
 消息流动方向：
@@ -42,7 +44,7 @@ pip install -r requirements.txt
 | 包 | 用途 |
 |---|---|
 | `pywinauto` | UIA 自动化操控微信窗口 |
-| `pyautogui` | 模拟键盘粘贴 |
+| `pyautogui` | 模拟键盘操作 |
 | `pywin32` | Windows API 绑定 |
 | `Pillow` | 表情/图片截图处理 |
 
@@ -52,8 +54,6 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
-# 或双击
-start.bat
 ```
 
 ## 配置
@@ -64,40 +64,49 @@ start.bat
 [connection]
 server_host = "127.0.0.1"   # Adapter 所在 IP
 server_port = 9721           # Adapter WS 端口
-reconnect_delay = 5.0        # 断线重连间隔（秒）
+reconnect_delay = 5.0        # 断线重连渐进退避基准（秒）
 
 [wechat]
-target_chats = []            # 监听的聊天列表（空 = 等 Adapter 下发）
-excluded = ["文件传输助手", "微信团队", "微信支付"]  # 忽略列表
-send_delay = 0.2             # 每条消息发送间隔
-close_weixin = false         # 是否自动关闭微信
-include_muted = false        # 是否扫描免打扰聊天
+target_chats = []            # 监听的聊天列表（空 = 等 Adapter 同步）
+admin_chats = []             # 管理员会话（LLM 可通过 hub_tell 通知）
+excluded = ["文件传输助手", "微信团队", "微信支付"]
+send_delay = 0.2
+close_weixin = false
+include_muted = false
 
 [log]
 level = "INFO"
 file = "wemai-client.log"
 ```
 
-`target_chats` 会从 Adapter 自动同步 —— Adapter 配置了哪些群聊/私聊名单，Client 就自动打开对应的独立窗口进行监听。
+`target_chats` 会从 Adapter 自动同步。`admin_chats` 标记管理员会话，好友请求时 LLM 会看到提示。
 
 ## 工作流程
 
 1. **启动 → 连接**：Client 连上 Adapter 的 WebSocket，请求配置同步
-2. **打开窗口**：根据 `target_chats` 打开所有独立聊天窗口，群聊自动激活多选模式
-3. **监听轮询**：每秒轮询所有窗口的最新一条消息，发现新消息 → 去重 → 推送给 Adapter
-4. **接收出站**：消费队列中的消息，一一打字/粘贴到微信窗口里发送
+2. **获取群成员**：群聊先自动扫描成员清单 → 激活多选模式
+3. **监听轮询**：每秒轮询所有窗口的最新一条消息 → 去重 → 推送给 Adapter
+4. **接收出站**：消费队列中的消息，文本用 `send_messages_to_friend`，图片/GIF 用 `send_files_to_friend` 发送
 5. **朋友圈命令**：Adapter 发来的 `moment_read` / `moment_post` 由 `wx_moments.py` 执行
-6. **好友请求**：每 60 秒检查一次新好友申请，推送给 Adapter 并通知管理员
+6. **好友请求**：每 60 秒检查一次新好友请求 → 已添加/已过期的跳过 → 待验证的推送给 Adapter
+7. **语音消息**：检测到语音消息 → 右键 → "语音转文字" → 提取文字以 `[语音]xxx` 发送给 Adapter
 
-特色机制：
-- **去重**：MD5 哈希去重缓存（最近 10000 条），防止撤回/滚动导致重复推送
-- **多选模式**：群聊独立窗口激活多选后，每条消息带发送人昵称，精准提取
-- **表情截图**：emoji 消息通过截图 + base64 编码传给 Adapter
-- **图片原文件**：image 消息通过 pyweixin 的 `save_media` 获取原图
+## 特色机制
+
+| 机制 | 说明 |
+|---|---|
+| **去重** | `_KNOWN_IDS` 集（上限 10000）防止同类消息重复推送 |
+| **好友去重** | `_SEEN_FRIEND` 集（上限 1000）防止同一好友请求重复上报 |
+| **多选模式** | 群聊独立窗口自动激活多选，`_parse_multiselect_text` 匹配群成员清单精准提取发送人 |
+| **语音转文字** | 私聊走独立窗口右键，群聊走主窗口右键，自动触发"语音转文字"菜单 |
+| **表情截图** | emoji 消息截图 + base64 编码传 Adapter，作为文本段中的图片发送 |
+| **图片原文件** | image 消息通过 pyweixin 的 `save_media` 获取原图 |
+| **渐进退避** | WS 断线后重连间隔从 `reconnect_delay` 开始线性递增到 30 秒上限 |
+| **窗口重调** | 独立窗口自动调到 931×767，消息位置一致 |
 
 ## 依赖项目
 
-- [pyweixin](https://github.com/Hello-Mr-Crab/pywechat) — 微信 UIA 自动化封装库（已 vendored 在 `pyweixin/` 目录中）
+- [pywechat](https://github.com/Hello-Mr-Crab/pywechat) — 微信 UIA 自动化封装库（已 fork 在 `pyweixin/` 目录中，LGPL-2.1）
 
 ## 与 Adapter 的关系
 
@@ -105,5 +114,5 @@ file = "wemai-client.log"
 |---|---|---|
 | 部署位置 | 服务器 (Linux/云) | 本地 Windows PC |
 | 角色 | 被动监听 WS 连接 | 主动连接 Adapter |
-| 操控对象 | MaiBot / LLM | 微信 GUI |
+| 操控对象 | MaiBot / LLM API | 微信 GUI |
 | 配置方式 | MaiBot WebUI | `config.toml` |
