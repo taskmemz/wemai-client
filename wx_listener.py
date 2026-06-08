@@ -774,6 +774,9 @@ class WeChatListener:
                                 is_transcribed = True
                         else:
                             logger.info("语音转文字: 未找到MenuItem")
+                        # 关闭可能残留的菜单
+                        try: mouse.click(coords=(0, 0))
+                        except: pass
                     else:
                         # 私聊：走独立窗口
                         dw.set_focus()
@@ -814,6 +817,8 @@ class WeChatListener:
                                 is_transcribed = True
                         else:
                             logger.info("语音转文字: 未找到MenuItem")
+                        try: mouse.click(coords=(0, 0))
+                        except: pass
                 except Exception as e:
                     logger.warning("语音转文字触发失败: %s", e)
             if is_transcribed:
@@ -952,6 +957,8 @@ class WeChatListener:
                     "激活多选 右键后未找到'多选'菜单项 [%s] (last_pos=%s)",
                     chat_name, click_pos,
                 )
+                try: mouse.click(coords=(0, 0))
+                except: pass
                 break  # 找到可选项但激活失败，放弃
         except Exception as e:
             logger.warning("激活多选 异常 [%s]: %s", chat_name, e)
