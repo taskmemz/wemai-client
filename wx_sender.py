@@ -84,27 +84,23 @@ class WeChatSender:
             if not sdata:
                 continue
             if stype == "image":
-                # GIF/图片：保存到临时文件后通过 pyweixin 文件发送
                 try:
-                    import base64, os, tempfile
+                    import base64, os, time as _time
                     raw = base64.b64decode(sdata)
                     ext = ".gif" if raw[:3] == b"GIF" else ".png"
-                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                    tmp.write(raw)
-                    tmp.close()
-                    GlobalConfig.close_weixin = self._close_weixin
-                    GlobalConfig.send_delay = self._send_delay
+                    img_dir = os.path.join(os.path.dirname(__file__), "send_cache")
+                    os.makedirs(img_dir, exist_ok=True)
+                    dst = os.path.join(img_dir, f"{int(_time.time() * 1000)}{ext}")
+                    with open(dst, "wb") as f:
+                        f.write(raw)
+                    GlobalConfig.send_delay = max(self._send_delay, 0.5)
                     Files.send_files_to_friend(
                         friend=receiver,
-                        files=[tmp.name],
+                        files=[dst],
                         with_messages=False,
                         close_weixin=False,
                     )
-                    logger.info("→ pyweixin [%s] [图片] (%d bytes)", receiver, len(raw))
-                    try:
-                        os.unlink(tmp.name)
-                    except Exception:
-                        pass
+                    logger.info("→ send_files [%s] (%d bytes)", receiver, len(raw))
                 except Exception as e:
                     logger.warning("发送图片失败 [%s]: %s", receiver, e)
                 continue

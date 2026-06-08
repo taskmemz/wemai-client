@@ -55,17 +55,20 @@ class WsPluginClient:
                 logger.info("已连接到插件服务器 %s:%s", self._host, self._port)
                 return
             except (ConnectionError, OSError) as e:
-                logger.warning("连接失败 (%s)，%s 秒后重试 (第%d次)...", e, self._reconnect_delay, retry)
-                await asyncio.sleep(self._reconnect_delay)
+                delay = min(self._reconnect_delay * (2 ** (retry - 1)), 30.0)
+                logger.warning("连接失败 (%s)，%.1f 秒后重试 (第%d次)...", e, delay, retry)
+                await asyncio.sleep(delay)
             except Exception as e:
                 logger.error("连接异常 (%s)，%s 秒后重试", e, self._reconnect_delay)
                 await asyncio.sleep(self._reconnect_delay)
 
     async def run(self) -> None:
+        backoff = 0
         while self._should_run:
             await self.connect()
             if not self._should_run or not self._connected:
                 break
+            backoff = 0
             await self.request_config()
             logger.info("连接已建立，开始接收消息")
             while self._should_run and self._connected:
@@ -84,8 +87,9 @@ class WsPluginClient:
                     self._connected = False
                     await self._cleanup()
             if self._should_run:
-                logger.info("%s 秒后重连 %s:%s ...", self._reconnect_delay, self._host, self._port)
-                await asyncio.sleep(self._reconnect_delay)
+                backoff = min((backoff + 1) * self._reconnect_delay, 30.0)
+                logger.info("%.1f 秒后重连 %s:%s ...", backoff, self._host, self._port)
+                await asyncio.sleep(backoff)
 
     async def request_config(self) -> bool:
         return await self.send_inbound({"type": "sync_config"})

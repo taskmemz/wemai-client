@@ -1381,6 +1381,14 @@ class Navigator():
                 is_group = False
             dialog_window = Tools.move_window_to_center(
                 Window={'class_name': 'mmui::ChatSingleWindow', 'title': f'{friend}'})
+            # 独立窗口调到 931x767
+            try:
+                handle = dialog_window.handle
+                rect = win32gui.GetWindowRect(handle)
+                new_w, new_h = 931, 767
+                win32gui.MoveWindow(handle, max(rect[0], 0), max(rect[1], 0), new_w, new_h, True)
+            except Exception:
+                pass
             if select:Tools.select_chatList(dialog_window)
             if window_minimize:
                 win32gui.SendMessage(dialog_window.handle, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE, 0)

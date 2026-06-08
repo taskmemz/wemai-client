@@ -108,13 +108,16 @@ class WeMaiClient:
 
     def _on_config_update(self, msg: dict) -> None:
         if self._listener is not None:
+            admin = msg.get("admin", "")
             self._listener.merge_remote_targets(
                 enable_filter=msg.get("enable_filter", False),
                 group_list=msg.get("group_list", []),
                 private_list=msg.get("private_list", []),
             )
-            logger.info("已同步 Adapter 配置: filter=%s, groups=%s, private=%s",
-                         msg.get("enable_filter"), msg.get("group_list"), msg.get("private_list"))
+            if admin:
+                self._listener.set_admin_chats([admin])
+            logger.info("已同步 Adapter 配置: filter=%s, groups=%s, private=%s, admin=%s",
+                         msg.get("enable_filter"), msg.get("group_list"), msg.get("private_list"), admin)
 
     def _handle_moment_command(self, msg: dict) -> None:
         """处理来自 Adapter 的朋友圈命令"""
@@ -190,7 +193,7 @@ class WeMaiClient:
                 logger.info("收到好友批准指令: %s", friend_name)
                 try:
                     from pyweixin import Contacts
-                    Contacts.check_new_friends(verify=True, limit=1, clear=False)
+                    Contacts.check_new_friends(verify=True, limit=1, clear=True)
                     logger.info("好友申请已验证: %s", friend_name)
                 except Exception as e:
                     logger.warning("验证好友失败: %s", e)

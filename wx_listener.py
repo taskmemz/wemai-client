@@ -93,6 +93,10 @@ class WeChatListener:
             self._target_chats.extend(added)
             logger.info("从 Adapter 同步到监听目标: %s", added)
 
+    def set_admin_chats(self, chats: list[str]) -> None:
+        self._admin_chats = set(chats)
+        logger.info("管理员会话已更新: %s", chats)
+
     def get_dialog_windows(self) -> dict[str, Any]:
         return self._dialog_windows
 
@@ -241,6 +245,11 @@ class WeChatListener:
                 logger.debug("打开窗口 [%s] 失败: %s", chat, e)
         # 群聊独立窗口激活多选模式，私聊跳过
         if self._dialog_windows:
+            # 先扫群成员清单，再激活多选
+            logger.info("正在获取群成员清单...")
+            for chat in self._dialog_windows:
+                self._ensure_group_members(chat)
+
             logger.info("在群聊独立窗口上激活多选模式...")
         for chat, dw in self._dialog_windows.items():
             if chat in self._excluded:
@@ -283,6 +292,10 @@ class WeChatListener:
                 self._SEEN_FRIEND.add(detail)
                 if len(self._SEEN_FRIEND) > 1000:
                     self._SEEN_FRIEND.clear()
+                # 跳过已处理（已添加/已过期）的旧请求
+                if "已添加" in detail or "已过期" in detail:
+                    logger.debug("好友请求已过期/已添加，跳过: %s", detail)
+                    continue
                 if self._on_friend_request:
                     logger.info("检测到好友请求: %s", detail)
                     self._on_friend_request({
@@ -521,6 +534,7 @@ class WeChatListener:
                 self._dialog_windows[chat] = dw
                 self._chat_group_status[chat] = is_group
                 logger.info("动态打开窗口: %s", chat)
+                self._ensure_group_members(chat)
                 # 群聊则激活多选模式
                 if is_group:
                     for retry in range(5):
@@ -530,6 +544,24 @@ class WeChatListener:
                         time.sleep(1.5)
             except Exception as e:
                 logger.debug("打开窗口 [%s] 失败: %s", chat, e)
+
+    def _ensure_group_members(self, chat: str) -> None:
+        """确保已有群聊的成员清单。"""
+        if chat in self._excluded:
+            return
+        if not self._chat_group_status.get(chat, False):
+            return
+        if self._chat_group_members.get(chat):
+            return
+        try:
+            from pyweixin import Contacts, GlobalConfig as _G
+            _G.close_weixin = False
+            members = Contacts.get_groupMembers_info(group=chat, close_weixin=False)
+            if members:
+                self._chat_group_members[chat] = members
+                logger.info("群成员清单 [%s]: %d 人", chat, len(members))
+        except Exception as e:
+            logger.warning("获取群成员 [%s] 失败: %s", chat, e)
 
     def _poll_all_windows(self, last_seen: dict[str, Any]) -> None:
         for chat_name, dw in list(self._dialog_windows.items()):
@@ -684,6 +716,112 @@ class WeChatListener:
                             break
             except Exception as e:
                 logger.warning("图片保存失败: %s", e)
+
+        from pyweixin.Uielements import Regex_Patterns
+        audio_pat = getattr(Regex_Patterns, "Audio_pattern", None)
+        if audio_pat and audio_pat.search(text):
+            m = audio_pat.search(text)
+            raw_transcribed = (m.group(1) or "").strip() if m and m.lastindex else ""
+            is_transcribed = raw_transcribed and raw_transcribed not in ("未播放", "已播放", "未收聽", "已收聽", "未能转换", "未能轉換", "转换失败", "轉換失敗")
+            if not is_transcribed:
+                is_group = self._chat_group_status.get(chat_name, False)
+                logger.info("语音转文字: 检测到语音消息, chat=%s is_group=%s text=%r", chat_name, is_group, text[:100])
+                try:
+                    from pywinauto import mouse, Desktop
+                    desk = Desktop(backend="uia")
+
+                    if is_group:
+                        # 群聊：走主窗口（独立窗口右键弹不出菜单）
+                        from pyweixin import Navigator
+                        mw = Navigator.open_dialog_window(friend=chat_name, is_maximize=False)
+                        time.sleep(0.3)
+                        chat_list_mw = mw.child_window(control_type="List", found_index=0)
+                        mw_items = chat_list_mw.children(control_type="ListItem")
+                        voice_item = None
+                        for item in reversed(mw_items):
+                            if audio_pat.search(item.window_text()):
+                                voice_item = item
+                                break
+                        if not voice_item:
+                            raise Exception("未找到语音消息")
+                        rect = voice_item.rectangle()
+                        # 语音气泡在左侧，偏移 120px 右键
+                        mouse.right_click(coords=(rect.left + 120, rect.mid_point().y))
+                        time.sleep(0.3)
+                        vt = mw.child_window(title="语音转文字", control_type="MenuItem")
+                        if not vt or not vt.exists(timeout=0.2):
+                            for ct in ("Menu", "Popup"):
+                                try:
+                                    popup = desk.window(control_type=ct, found_index=0)
+                                    if popup.exists(timeout=0.1):
+                                        vt = popup.child_window(title="语音转文字", control_type="MenuItem")
+                                        if vt.exists(timeout=0.1):
+                                            break
+                                except:
+                                    pass
+                        if vt is not None and vt.exists(timeout=0.3):
+                            vt.click_input()
+                            time.sleep(2.5)
+                            raw_transcribed = ""
+                            for item in reversed(mw_items):
+                                if audio_pat.search(item.window_text()):
+                                    wt2 = item.window_text()
+                                    m2 = audio_pat.search(wt2)
+                                    raw_transcribed = (m2.group(1) or "").strip() if m2 and m2.lastindex else ""
+                                    break
+                            logger.info("语音转文字: 结果=%r", raw_transcribed)
+                            if raw_transcribed and raw_transcribed not in ("未播放", "已播放", "未收聽", "已收聽", "未能转换", "未能轉換", "转换失败", "轉換失敗"):
+                                is_transcribed = True
+                        else:
+                            logger.info("语音转文字: 未找到MenuItem")
+                    else:
+                        # 私聊：走独立窗口
+                        dw.set_focus()
+                        time.sleep(0.2)
+                        chat_list.type_keys("{END}")
+                        time.sleep(0.3)
+                        current_items = chat_list.children(control_type="ListItem") or chat_list.children(control_type="CheckBox")
+                        voice_item = None
+                        for item in reversed(current_items):
+                            if audio_pat.search(item.window_text()):
+                                voice_item = item
+                                break
+                        if not voice_item:
+                            raise Exception("未找到语音消息")
+                        rect = voice_item.rectangle()
+                        vt = None
+                        for click_pos in [
+                            (rect.left + 120, rect.mid_point().y),
+                            (rect.right - 120, rect.mid_point().y),
+                            (rect.mid_point().x, rect.mid_point().y),
+                        ]:
+                            mouse.right_click(coords=click_pos)
+                            time.sleep(0.3)
+                            for m in dw.descendants(control_type="MenuItem"):
+                                if "语音转文字" in (m.window_text() or ""):
+                                    vt = m
+                                    break
+                            if vt:
+                                break
+                        if vt:
+                            vt.click_input()
+                            time.sleep(2.0)
+                            wt2 = voice_item.window_text()
+                            m2 = audio_pat.search(wt2)
+                            raw_transcribed = (m2.group(1) or "").strip() if m2 and m2.lastindex else ""
+                            logger.info("语音转文字: 结果=%r", raw_transcribed)
+                            if raw_transcribed and raw_transcribed not in ("未播放", "已播放", "未收聽", "已收聽", "未能转换", "未能轉換", "转换失败", "轉換失敗"):
+                                is_transcribed = True
+                        else:
+                            logger.info("语音转文字: 未找到MenuItem")
+                except Exception as e:
+                    logger.warning("语音转文字触发失败: %s", e)
+            if is_transcribed:
+                content = f"[语音]{raw_transcribed}"
+            else:
+                content = "[语音]"
+            msg_type = "text"
+            logger.info("语音转文字: [%s] %s", chat_name, content)
 
         logger.info("检测到 [%s] %s: %s (%s)", chat_name, sender, content[:60], msg_type)
         self._emit(chat_name, sender, content, is_group, msg_type, media_path, media_base64, media_ext)

@@ -1425,18 +1425,21 @@ class Contacts():
                 contact_list.type_keys('{HOME}')
                 contact_list.type_keys('{DOWN}'*2)
                 selected=[listitem for listitem in contact_list.children(control_type='ListItem') if listitem.is_selected()]
-                while selected[0].window_text()!=last:
+                while selected:
                     newfriends_detail.append(selected[0].window_text())
                     if verified_num<limit:
                         is_verified=friend_verification(selected[0])
                         if is_verified:verified_num+=1
+                    if selected[0].window_text()==last:
+                        if clear:
+                            clear_item(selected[0])
+                        break
                     if clear:
                         clear_item(selected[0])
                         contact_list.children(control_type='ListItem')[2].click_input()
                     else:
                         pyautogui.keyDown('down')
                     selected=[listitem for listitem in contact_list.children(control_type='ListItem') if listitem.is_selected()]
-            if clear:clear_item(selected[0])
             contact_list.type_keys('{HOME}')
             Tools.collapse_contacts(main_window,contact_list)
         chat_button.click_input()
