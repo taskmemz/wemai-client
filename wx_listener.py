@@ -341,6 +341,10 @@ class WeChatListener:
             if not sl.exists(timeout=0.5):
                 logger.info("全局扫描(全) 找不到会话列表")
                 return
+            # 聚焦主窗口和会话列表，确保键盘操作命中目标而非桌面
+            mw.set_focus()
+            time.sleep(0.05)
+            sl.set_focus()
             sl.type_keys('{HOME}')
             import re as _re
             mute_pattern = _re.compile(r'\n\[(\d+)条\]|\n\[(\d+)\]')
@@ -439,8 +443,12 @@ class WeChatListener:
                 hwnd = win32gui.FindWindow('Qt51514QWindowIcon', 'Weixin')
             if hwnd:
                 mw = desktop.window(handle=hwnd)
+                # 聚焦主窗口，确保键盘操作不会打到桌面
+                mw.set_focus()
+                time.sleep(0.05)
                 sl = mw.child_window(**MainWindowUI.SessionList)
                 if sl.exists(timeout=0.2):
+                    sl.set_focus()
                     sl.type_keys('{HOME}')
         except Exception:
             pass
