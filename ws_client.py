@@ -95,6 +95,10 @@ class WsPluginClient:
                     length = int.from_bytes(raw_len, "big")
                     payload = await self._read_exact(length)
                     msg = json.loads(payload.decode("utf-8"))
+                    # 服务端心跳 → 回复 pong
+                    if msg.get("type") == "ping":
+                        await self.send_inbound({"type": "pong"})
+                        continue
                     if msg.get("type") in ("config_update", "sync_config"):
                         if self._on_config is not None:
                             self._on_config(msg)
