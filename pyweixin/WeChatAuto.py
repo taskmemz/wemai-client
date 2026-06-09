@@ -4171,22 +4171,12 @@ class Messages():
                 image.save(pic_path)
                 pyautogui.press('left',_pause=False)
             if not is_image and not is_video_expired:
-                #没有旋转按钮是视频
-                is_download=False
+                #没有旋转按钮→可能是视频或特殊格式图片
+                #统一截图保存，避免右键菜单→固定偏移点到"复制"
                 saved_num+=1
-                image_area.right_click_input()
-                video_path=os.path.join(target_folder,f'与{friend}的聊天视频{saved_num}.mp4')
-                image_preview_window.click_input()
-                while not is_download:
-                    image_preview_window.right_click_input()
-                    copy_item=image_preview_window.child_window(**MenuItems.CopyMenuItem)
-                    if copy_item.exists(timeout=0.2):
-                        is_download=True 
-                    time.sleep(0.2)       
-                pyautogui.press('down',presses=presses_num)
-                pyautogui.press('enter')
-                time.sleep(2)
-                SystemSettings.save_pasted_video(video_path=video_path)
+                pic_path=os.path.join(target_folder,f'与{friend}的聊天图片{saved_num}.png')
+                image=image_area.capture_as_image()
+                image.save(pic_path)
                 pyautogui.press('left',_pause=False)
             if earliest_image.exists(timeout=0.1):
                 #按下左键后可能会出现这是第一张图片的提示,那么直接退出循环
