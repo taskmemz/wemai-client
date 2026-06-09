@@ -9,10 +9,15 @@ logger = logging.getLogger("wemai_client.ws")
 
 
 class WsPluginClient:
-    def __init__(self, host: str, port: int, reconnect_delay: float = 5.0) -> None:
+    def __init__(
+        self, host: str, port: int, reconnect_delay: float = 5.0,
+        read_timeout: float = 120.0, write_timeout: float = 60.0,
+    ) -> None:
         self._host = host
         self._port = port
         self._reconnect_delay = reconnect_delay
+        self._read_timeout = read_timeout
+        self._write_timeout = write_timeout
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
@@ -29,6 +34,19 @@ class WsPluginClient:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    async def _read_exact(self, n: int) -> bytes:
+        """带超时的精确读取，避免 readexactly 永久阻塞"""
+        try:
+            return await asyncio.wait_for(
+                self._reader.readexactly(n), timeout=self._read_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "⚠️ 读取 %d 字节超时（已等待 %.1fs），疑似服务端或网络卡顿",
+                n, self._read_timeout,
+            )
+            raise ConnectionError(f"read {n} bytes timeout after {self._read_timeout}s")
 
     async def _cleanup(self) -> None:
         self._connected = False
@@ -73,17 +91,27 @@ class WsPluginClient:
             logger.info("连接已建立，开始接收消息")
             while self._should_run and self._connected:
                 try:
-                    raw_len = await self._reader.readexactly(4)
+                    raw_len = await self._read_exact(4)
                     length = int.from_bytes(raw_len, "big")
-                    payload = await self._reader.readexactly(length)
+                    payload = await self._read_exact(length)
                     msg = json.loads(payload.decode("utf-8"))
                     if msg.get("type") in ("config_update", "sync_config"):
                         if self._on_config is not None:
                             self._on_config(msg)
                     elif self._on_outbound is not None:
                         self._on_outbound(msg)
-                except (asyncio.IncompleteReadError, ConnectionError, OSError, json.JSONDecodeError, AttributeError) as e:
-                    logger.warning("与插件服务器断开: %s", e)
+                except asyncio.IncompleteReadError as e:
+                    logger.warning("🔌 服务端断开连接: %s (received %d bytes, expected %d)",
+                                   e, len(e.partial) if hasattr(e, 'partial') else 0,
+                                   e.expected if hasattr(e, 'expected') else '?')
+                    self._connected = False
+                    await self._cleanup()
+                except (ConnectionError, OSError, asyncio.TimeoutError) as e:
+                    logger.warning("⚠️ 连接异常 (%s: %s)", type(e).__name__, e)
+                    self._connected = False
+                    await self._cleanup()
+                except (json.JSONDecodeError, AttributeError) as e:
+                    logger.warning("📦 消息格式异常: %s", e)
                     self._connected = False
                     await self._cleanup()
             if self._should_run:
@@ -101,10 +129,20 @@ class WsPluginClient:
         try:
             raw = json.dumps(data, ensure_ascii=False)
             payload = raw.encode("utf-8")
+            size_mb = len(payload) / 1024 / 1024
+            if size_mb > 0.5:
+                logger.info("发送大消息: %.1f MB", size_mb)
             self._writer.write(len(payload).to_bytes(4, "big"))
             self._writer.write(payload)
-            await self._writer.drain()
+            await asyncio.wait_for(
+                self._writer.drain(), timeout=self._write_timeout,
+            )
             return True
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ 发送超时（%.1fs），数据可能过大 (%.1f MB)", self._write_timeout, size_mb)
+            self._connected = False
+            await self._cleanup()
+            return False
         except Exception as e:
             logger.warning("发送入站消息失败: %s", e)
             self._connected = False
