@@ -134,6 +134,7 @@ class WeChatListener:
         GlobalConfig.close_weixin = self._close_weixin
         GlobalConfig.send_delay = self._send_delay
         GlobalConfig.load_delay = 1.0
+        GlobalConfig.window_size = (900, 700)
         self._Navigator = Navigator
         self._Monitor = Monitor
 
@@ -144,24 +145,12 @@ class WeChatListener:
             logger.error("打开微信失败: %s", e)
             return
 
-        # 拉大微信主窗口，让独立窗口有足够空间
+        # 保存主窗口引用供全局扫描使用
         try:
             import win32gui
             hwnd = win32gui.FindWindow('Qt51514QWindowIcon', '微信')
             if hwnd == 0:
                 hwnd = win32gui.FindWindow('Qt51514QWindowIcon', 'Weixin')
-            if hwnd:
-                win32gui.ShowWindow(hwnd, 9)
-                time.sleep(0.2)
-                rect = win32gui.GetWindowRect(hwnd)
-                w, h = rect[2] - rect[0], rect[3] - rect[1]
-                target_w, target_h = max(w, 1200), max(h, 800)
-                if w < target_w or h < target_h:
-                    win32gui.MoveWindow(hwnd, rect[0], rect[1], target_w, target_h, True)
-                GlobalConfig.window_size = (target_w, target_h)
-                logger.info("微信主窗口已调整: %dx%d → %dx%d", w, h, target_w, target_h)
-
-            # 保存主窗口引用供全局扫描使用
             from pywinauto import Desktop
             desktop = Desktop(backend='uia')
             self._main_window = desktop.window(handle=hwnd)

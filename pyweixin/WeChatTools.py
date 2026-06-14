@@ -1335,8 +1335,14 @@ class Navigator():
                 except Exception:
                     pass
                 if is_contact:
-                    selected_items = [listitem for listitem in session_list.children(
-                        control_type='ListItem') if listitem.is_selected()]
+                    # 等待搜索结果对应的会话项被选中（绿色高亮）
+                    selected_items = []
+                    for _ in range(max(1, int(GlobalConfig.load_delay * 3))):
+                        selected_items = [listitem for listitem in session_list.children(
+                            control_type='ListItem') if listitem.is_selected()]
+                        if selected_items:
+                            break
+                        time.sleep(0.1)
                     if selected_items:
                         # 此时主窗口右侧还显示着聊天界面，群标签可见，趁机检测群聊
                         try:
