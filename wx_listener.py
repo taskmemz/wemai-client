@@ -502,12 +502,14 @@ class WeChatListener:
                                     item_rect = cbs[-1].element_info.rectangle
                         except Exception:
                             pass
+                        EMOJI_PAD_BOTTOM = 150  # 表情图在文字下方，扩展纵向空间
+                        EMOJI_PAD_RIGHT = 80    # 表情图可能比文字宽
                         if item_rect:
                             crop_rect = (
-                                item_rect.left - w_rect.left,
-                                item_rect.top - w_rect.top,
-                                item_rect.right - w_rect.left,
-                                item_rect.bottom - w_rect.top
+                                max(item_rect.left - w_rect.left, 0),
+                                max(item_rect.top - w_rect.top, 0),
+                                min(item_rect.right - w_rect.left + EMOJI_PAD_RIGHT, w_rect.right - w_rect.left),
+                                min(item_rect.bottom - w_rect.top + EMOJI_PAD_BOTTOM, w_rect.bottom - w_rect.top)
                             )
                             cropped = full.crop(crop_rect)
                         else:
@@ -522,10 +524,11 @@ class WeChatListener:
                             ts = int(time.time())
                             local_path = os.path.join(save_dir, f"{msg_type}_{chat_name}_{ts}.png")
                             cropped.save(local_path)
+                            logger.info("预读截图已保存: %s (%dx%d)", local_path, cropped.width, cropped.height)
                         except Exception:
                             pass
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("预读表情截图失败: %s", e)
                 self._emit(chat_name, sender, content, is_group, msg_type, media_path, media_base64, media_ext)
 
     def _open_pending_windows(self) -> None:
@@ -676,12 +679,14 @@ class WeChatListener:
                             item_rect = cbs[-1].element_info.rectangle
                 except Exception:
                     pass
+                EMOJI_PAD_BOTTOM = 150  # 表情图在文字下方，扩展纵向空间
+                EMOJI_PAD_RIGHT = 80    # 表情图可能比文字宽
                 if item_rect:
                     crop_rect = (
-                        item_rect.left - w_rect.left,
-                        item_rect.top - w_rect.top,
-                        item_rect.right - w_rect.left,
-                        item_rect.bottom - w_rect.top
+                        max(item_rect.left - w_rect.left, 0),
+                        max(item_rect.top - w_rect.top, 0),
+                        min(item_rect.right - w_rect.left + EMOJI_PAD_RIGHT, w_rect.right - w_rect.left),
+                        min(item_rect.bottom - w_rect.top + EMOJI_PAD_BOTTOM, w_rect.bottom - w_rect.top)
                     )
                     cropped = full.crop(crop_rect)
                 else:
@@ -696,7 +701,7 @@ class WeChatListener:
                     ts = int(time.time())
                     local_path = os.path.join(save_dir, f"{msg_type}_{chat_name}_{ts}.png")
                     cropped.save(local_path)
-                    logger.info("截图已本地保存: %s", local_path)
+                    logger.info("截图已本地保存: %s (%dx%d)", local_path, cropped.width, cropped.height)
                 except Exception:
                     pass
                 logger.info("截图成功: %dx%d -> base64=%d bytes",
