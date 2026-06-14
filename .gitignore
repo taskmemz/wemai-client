@@ -25,3 +25,6 @@ Thumbs.db
 
 # Test artifacts
 test/saved_images/
+
+# Backup files
+*.bak
