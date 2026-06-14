@@ -350,6 +350,9 @@ class Tools():
         try:
             window.wait(wait_for='ready',timeout=2)
             window_width,window_height=window.rectangle().width(),window.rectangle().height()
+            # 动态适配：窗口尺寸不能超出屏幕
+            window_width = min(window_width, screen_width - 20)
+            window_height = min(window_height, screen_height - 40)
             new_left=(screen_width-window_width)//2
             new_top=(screen_height-window_height)//2
             if screen_width!=window_width:
@@ -675,22 +678,22 @@ class Navigator():
         if main_window.class_name()=='mmui::LoginWindow':
             raise NotLoginError
         if main_window.class_name()=='mmui::MainWindow':
-            main_window.restore()
-            win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST, 
-            0, 0,window_size[0],window_size[1],win32con.SWP_NOMOVE)
-            window_width,window_height=window_size[0],window_size[1]
-            screen_width,screen_height=win32api.GetSystemMetrics(win32con.SM_CXSCREEN),win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
-            new_left=(screen_width-window_width)//2
-            new_top=(screen_height-window_height)//2
-            if screen_width!=window_width:
-                #移动窗口到屏幕中央
-                win32gui.MoveWindow(hwnd,new_left,new_top,window_width,window_height,True)
-            ###############################
             if is_maximize:
-                #需要使用win32gui.SendMessage全屏,main_window.maximize不管用
+                # 直接最大化，跳过 restore+MoveWindow 避免窗口尺寸大于屏幕时算出负坐标窜到屏外
                 win32gui.SendMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE,0)
-            if not is_maximize:
-                win32gui.SendMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE,0)
+            else:
+                main_window.restore()
+                # 动态适配屏幕大小：确保窗口不超出屏幕
+                screen_width,screen_height=win32api.GetSystemMetrics(win32con.SM_CXSCREEN),win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+                win_w = min(window_size[0], screen_width - 20)
+                win_h = min(window_size[1], screen_height - 40)
+                win32gui.SetWindowPos(hwnd,win32con.HWND_TOPMOST, 
+                0, 0, win_w, win_h, win32con.SWP_NOMOVE)
+                new_left=(screen_width-win_w)//2
+                new_top=(screen_height-win_h)//2
+                if screen_width!=win_w:
+                    #移动窗口到屏幕中央
+                    win32gui.MoveWindow(hwnd,new_left,new_top,win_w,win_h,True)
             offline_button=main_window.child_window(**Buttons.OffLineButton)
             Tools.cancel_pin(main_window)
             if offline_button.exists(timeout=0.1):
@@ -1335,6 +1338,11 @@ class Navigator():
                     selected_items = [listitem for listitem in session_list.children(
                         control_type='ListItem') if listitem.is_selected()]
                     if selected_items:
+                        # 此时主窗口右侧还显示着聊天界面，群标签可见，趁机检测群聊
+                        try:
+                            is_group = Tools.is_group_chat(main_window)
+                        except Exception:
+                            pass
                         try:
                             selected_items[0].double_click_input()
                             break  # 成功则退出重试
@@ -1374,11 +1382,6 @@ class Navigator():
             else:
                 # 两次都失败，最后一次的异常不再尝试
                 pass
-            # 在主窗口仍显示该聊天时检测是否为群聊（此时独立窗口尚未置顶）
-            try:
-                is_group = Tools.is_group_chat(main_window)
-            except Exception:
-                is_group = False
             dialog_window = Tools.move_window_to_center(
                 Window={'class_name': 'mmui::ChatSingleWindow', 'title': f'{friend}'})
             # 独立窗口调到 931x767
