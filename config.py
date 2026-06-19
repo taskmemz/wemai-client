@@ -17,17 +17,6 @@ class ConnectionConfig:
 
 
 @dataclass
-class WeChatConfig:
-    target_chats: list[str] = field(default_factory=list)
-    excluded: list[str] = field(default_factory=lambda: ["文件传输助手", "微信团队", "微信支付"])
-    send_delay: float = 0.2
-    close_weixin: bool = False
-    group_members: dict[str, list[str]] = field(default_factory=dict)
-    include_muted: bool = False
-    admin_chats: list[str] = field(default_factory=list)
-
-
-@dataclass
 class LogConfig:
     level: str = "INFO"
     file: str = "wemai-client.log"
@@ -37,7 +26,6 @@ class LogConfig:
 @dataclass
 class ClientConfig:
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
-    wechat: WeChatConfig = field(default_factory=WeChatConfig)
     log: LogConfig = field(default_factory=LogConfig)
 
 
@@ -86,18 +74,6 @@ def _make_toml(server_host: str, server_port: int) -> str:
 server_host = "{server_host}"
 server_port = {server_port}
 reconnect_delay = 5.0
-
-[wechat]
-target_chats = []
-excluded = ["文件传输助手", "微信团队", "微信支付"]
-send_delay = 0.2
-close_weixin = false
-include_muted = false
-admin_chats = []
-
-[wechat.group_members]
-# "群聊名称1" = ["成员A", "成员B"]
-# "群聊名称2" = ["成员X", "成员Y"]
 
 [log]
 level = "INFO"
@@ -156,7 +132,6 @@ def load_config(path: str | None = None) -> ClientConfig:
         return ClientConfig()
 
     conn = data.get("connection", {})
-    wx = data.get("wechat", {})
     lg = data.get("log", {})
 
     return ClientConfig(
@@ -164,15 +139,6 @@ def load_config(path: str | None = None) -> ClientConfig:
             server_host=str(conn.get("server_host", "127.0.0.1")),
             server_port=int(conn.get("server_port", 9721)),
             reconnect_delay=float(conn.get("reconnect_delay", 5.0)),
-        ),
-        wechat=WeChatConfig(
-            target_chats=list(wx.get("target_chats", [])),
-            excluded=list(wx.get("excluded", ["文件传输助手", "微信团队", "微信支付"])),
-            send_delay=float(wx.get("send_delay", 0.2)),
-            close_weixin=bool(wx.get("close_weixin", False)),
-            group_members=dict(wx.get("group_members", {})),
-            include_muted=bool(wx.get("include_muted", False)),
-            admin_chats=list(wx.get("admin_chats", [])),
         ),
         log=LogConfig(
             level=str(lg.get("level", "INFO")),

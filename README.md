@@ -58,38 +58,46 @@ python main.py
 
 ## 配置
 
-`config.toml`（首次运行自动生成）：
+`config.toml` 仅保留本地连接信息，其余全部由 Adapter 在 WebSocket 连接建立后自动下发：
 
 ```toml
 [connection]
 server_host = "127.0.0.1"   # Adapter 所在 IP
 server_port = 9721           # Adapter WS 端口
-reconnect_delay = 5.0        # 断线重连渐进退避基准（秒）
-
-[wechat]
-target_chats = []            # 监听的聊天列表（空 = 等 Adapter 同步）
-admin_chats = []             # 管理员会话（LLM 可通过 hub_tell 通知）
-excluded = ["文件传输助手", "微信团队", "微信支付"]
-send_delay = 0.2
-close_weixin = false
-include_muted = false
+reconnect_delay = 5.0        # 断线重连基准（秒）
 
 [log]
 level = "INFO"
 file = "wemai-client.log"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ```
 
-`target_chats` 会从 Adapter 自动同步。`admin_chats` 标记管理员会话，好友请求时 LLM 会看到提示。
+| 配置来源 | 内容 |
+|----------|------|
+| 本地 `config.toml` | 连接地址、日志参数 |
+| Adapter 推送 | 数据源模式（WeFlow/pyweixin）、WeFlow 连接信息、聊天过滤名单、管理员、发送间隔、排除会话等 |
+
+配置首次运行时交互式生成。连接建立后 Adapter 会全量推送配置，客户端根据 `data_source` 字段自动选择 WeFlow 或 pyweixin 数据源启动。
+
+## 数据源模式
+
+| 模式 | 数据来源 | 适用场景 |
+|------|---------|---------|
+| **pyweixin** | UIA 自动化操控微信 GUI | 需要 pyweixin 包 + 桌面微信登录 |
+| **WeFlow** | WeFlow HTTP API + SSE 推送 | WeFlow 后台运行，无需 GUI 操作 |
+
+两种模式的发送均走 `pyweixin` 的 `send_messages_to_friend`（Adapter 自动将 WeFlow 收到的 wxid 转为显示名称后再传给 Client）。
 
 ## 工作流程
 
-1. **启动 → 连接**：Client 连上 Adapter 的 WebSocket，请求配置同步
-2. **获取群成员**：群聊先自动扫描成员清单 → 激活多选模式
-3. **监听轮询**：每秒轮询所有窗口的最新一条消息 → 去重 → 推送给 Adapter
-4. **接收出站**：消费队列中的消息，文本用 `send_messages_to_friend`，图片/GIF 用 `send_files_to_friend` 发送
-5. **朋友圈命令**：Adapter 发来的 `moment_read` / `moment_post` 由 `wx_moments.py` 执行
-6. **好友请求**：每 60 秒检查一次新好友请求 → 已添加/已过期的跳过 → 待验证的推送给 Adapter
-7. **语音消息**：检测到语音消息 → 右键 → "语音转文字" → 提取文字以 `[语音]xxx` 发送给 Adapter
+1. **启动 → 连接**：Client 连上 Adapter 的 WebSocket，发送 `sync_config` 请求配置
+2. **等待配置下发**：Adapter 推送完整配置（数据源模式、过滤名单、参数等），Client 据此选择启动 WeFlow 或 pyweixin 数据源
+3. **模式切换**：若 Adapter 热重载中切换了 `data_source.mode`，Client 自动停止当前数据源并启动新模式
+4. **监听/推送**：数据源检测到新消息 → 去重 → 推送给 Adapter
+5. **接收出站**：消费队列中的消息，文本用 `send_messages_to_friend`，图片/GIF 用 `send_files_to_friend` 发送
+6. **朋友圈命令**：Adapter 发来的 `moment_read` / `moment_post`，WeFlow 模式走 API，pyweixin 模式走 GUI 自动化
+7. **好友请求**：每 60 秒检查一次新好友请求 → 已添加/已过期的跳过 → 待验证的推送给 Adapter
+8. **语音消息**：检测到语音消息 → 右键 → "语音转文字" → 提取文字以 `[语音]xxx` 发送给 Adapter
 
 ## 特色机制
 
