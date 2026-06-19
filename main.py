@@ -16,6 +16,7 @@ from ws_client import WsPluginClient
 from wx_listener import WeChatListener
 from wx_sender import WeChatSender
 from wx_moments import WeChatMoments
+from weflow_client import WeFlowClient
 
 logger = logging.getLogger("wemai_client.main")
 _stop_event = threading.Event()
@@ -50,10 +51,13 @@ class WeMaiClient:
         self._outbound_queue: queue.Queue = queue.Queue()
         self._sender = WeChatSender(
             outbound_queue=self._outbound_queue,
-            send_delay=cfg.wechat.send_delay,
-            close_weixin=cfg.wechat.close_weixin,
+            send_delay=0.2,
+            close_weixin=False,
         )
         self._listener: WeChatListener | None = None
+        self._weflow: WeFlowClient | None = None
+        self._current_mode: str | None = None
+        self._config_received: bool = False
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -65,29 +69,8 @@ class WeMaiClient:
         self._ws.set_outbound_handler(self._on_plugin_outbound)
         self._ws.set_config_handler(self._on_config_update)
 
-        listener = WeChatListener(
-            target_chats=self._cfg.wechat.target_chats,
-            excluded=self._cfg.wechat.excluded,
-            poll_interval=1.0,
-            close_weixin=self._cfg.wechat.close_weixin,
-            send_delay=self._cfg.wechat.send_delay,
-            on_message=self._on_wechat_message,
-            group_members=self._cfg.wechat.group_members,
-            include_muted=self._cfg.wechat.include_muted,
-            on_friend_request=self._on_friend_request,
-            admin_chats=self._cfg.wechat.admin_chats,
-        )
-        self._listener = listener
-        
-        # Wire sender to listener's dialog windows
-        self._sender.set_dialog_windows(listener.get_dialog_windows())
-        self._sender.set_pre_send_hook(listener.begin_send)
-        self._sender.set_post_send_hook(listener.mark_sent)
-        
-        self._sender.start()
-        listener.start()
-
         ws_task = asyncio.create_task(self._ws.run())
+        logger.info("等待 Adapter 下发配置...")
 
         try:
             while not _stop_event.is_set():
@@ -95,8 +78,7 @@ class WeMaiClient:
         except asyncio.CancelledError:
             pass
         finally:
-            self._listener = None
-            listener.stop()
+            self._stop_data_source()
             self._sender.stop()
             await self._ws.stop()
             ws_task.cancel()
@@ -107,17 +89,109 @@ class WeMaiClient:
             logger.info("所有组件已停止")
 
     def _on_config_update(self, msg: dict) -> None:
+        if self._loop is not None and self._loop.is_running():
+            asyncio.ensure_future(self._apply_config_from_adaptor(msg))
+
+    async def _apply_config_from_adaptor(self, msg: dict) -> None:
+        data_source = msg.get("data_source", "pyweixin")
+        admin = msg.get("admin", [])
+
+        send_delay = msg.get("send_delay")
+        close_weixin = msg.get("close_weixin")
+        if send_delay is not None or close_weixin is not None:
+            self._sender.update_params(send_delay=send_delay, close_weixin=close_weixin)
+
+        if not self._config_received:
+            if data_source == "weflow":
+                await self._start_weflow(msg)
+            else:
+                await self._start_pyweixin(msg)
+            self._config_received = True
+            return
+
+        if data_source != self._current_mode:
+            logger.info("数据源模式切换: %s -> %s", self._current_mode, data_source)
+            await self._stop_data_source()
+            if data_source == "weflow":
+                await self._start_weflow(msg)
+            else:
+                await self._start_pyweixin(msg)
+            return
+
         if self._listener is not None:
-            admin = msg.get("admin", "")
             self._listener.merge_remote_targets(
                 enable_filter=msg.get("enable_filter", False),
                 group_list=msg.get("group_list", []),
                 private_list=msg.get("private_list", []),
             )
             if admin:
-                self._listener.set_admin_chats([admin])
+                self._listener.set_admin_chats(admin)
+            if msg.get("include_muted") is not None:
+                self._listener._include_muted = bool(msg["include_muted"])
             logger.info("已同步 Adapter 配置: filter=%s, groups=%s, private=%s, admin=%s",
                          msg.get("enable_filter"), msg.get("group_list"), msg.get("private_list"), admin)
+        elif self._weflow is not None:
+            logger.info("WeFlow 模式收到配置更新，刷新映射表")
+            await asyncio.to_thread(self._weflow.build_mapping)
+            logger.info("映射表已刷新: %d names", len(self._weflow._name_to_wxid))
+
+    async def _stop_data_source(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener = None
+        if self._weflow is not None:
+            self._weflow.stop_push()
+            self._weflow = None
+        self._sender.stop()
+        self._current_mode = None
+
+    async def _start_weflow(self, msg: dict) -> None:
+        base_url = msg.get("weflow_base_url", "http://127.0.0.1:5031")
+        api_token = msg.get("weflow_api_token", "")
+        logger.info("启动 WeFlow 模式: %s", base_url)
+        self._weflow = WeFlowClient(base_url=base_url, api_token=api_token)
+        if not await asyncio.to_thread(self._weflow.health_check):
+            logger.critical("WeFlow 健康检查失败，请确认 weflow serve 已启动")
+            self._weflow = None
+            return
+        logger.info("WeFlow 已就绪，构建映射表...")
+        await asyncio.to_thread(self._weflow.build_mapping)
+        self._weflow.set_handlers(
+            on_message=self._on_wechat_message,
+            on_revoke=self._on_wechat_revoke,
+        )
+        self._sender.set_pre_send_hook(self._on_weflow_pre_send)
+        self._sender.set_post_send_hook(self._on_weflow_post_send)
+        self._sender.start()
+        self._weflow.start_push()
+        self._current_mode = "weflow"
+        logger.info("WeFlow 模式已启动")
+
+    async def _start_pyweixin(self, msg: dict) -> None:
+        admin = msg.get("admin", [])
+        group_list = msg.get("group_list", [])
+        private_list = msg.get("private_list", [])
+        target_chats = group_list + private_list
+        logger.info("启动 pyweixin 模式: targets=%s, admin=%s", target_chats, admin)
+        listener = WeChatListener(
+            target_chats=target_chats,
+            excluded=msg.get("excluded", ["文件传输助手", "微信团队", "微信支付"]),
+            poll_interval=1.0,
+            close_weixin=msg.get("close_weixin", False),
+            send_delay=msg.get("send_delay", 0.2),
+            on_message=self._on_wechat_message,
+            include_muted=msg.get("include_muted", False),
+            on_friend_request=self._on_friend_request,
+            admin_chats=admin,
+        )
+        self._listener = listener
+        self._sender.set_dialog_windows(listener.get_dialog_windows())
+        self._sender.set_pre_send_hook(listener.begin_send)
+        self._sender.set_post_send_hook(listener.mark_sent)
+        self._sender.start()
+        listener.start()
+        self._current_mode = "pyweixin"
+        logger.info("pyweixin 模式已启动，监听 %d 个会话", len(target_chats) if target_chats else 0)
 
     def _handle_moment_command(self, msg: dict) -> None:
         """处理来自 Adapter 的朋友圈命令"""
@@ -126,11 +200,14 @@ class WeMaiClient:
         
         if cmd == "moment_read":
             limit = msg.get("limit", 10)
+            posts: list[dict] = []
             try:
-                posts = WeChatMoments.read_recent(number=limit)
+                if self._weflow is not None:
+                    posts = self._read_moments_weflow(limit)
+                else:
+                    posts = WeChatMoments.read_recent(number=limit)
             except Exception as e:
                 logger.error("读取朋友圈失败: %s", e)
-                posts = []
             logger.info("朋友圈读取: %d 条", len(posts))
             self._send_moment_response(req_id, {"moments": posts, "count": len(posts)})
         
@@ -143,6 +220,93 @@ class WeMaiClient:
                 logger.error("发布朋友圈失败: %s", e)
                 ok = False
             self._send_moment_response(req_id, {"success": ok, "text": text})
+
+    def _read_moments_weflow(self, limit: int) -> list[dict]:
+        """通过 WeFlow API 读取朋友圈，返回完整数据含评论/点赞/图片"""
+        raw = self._weflow.get_moments(limit=limit) if self._weflow else []
+        posts = []
+        for item in raw:
+            username = (
+                item.get("username")
+                or item.get("userName")
+                or item.get("wxid")
+                or ""
+            )
+            nickname = (
+                item.get("nickname")
+                or item.get("nickName")
+                or item.get("displayName")
+                or item.get("display_name")
+                or username
+            )
+            avatar = item.get("avatarUrl") or item.get("avatar_url") or item.get("avatar") or ""
+            content = item.get("content") or item.get("text") or ""
+            create_time = item.get("createTime") or item.get("create_time") or 0
+
+            images = []
+            media_list = item.get("media") or item.get("images") or item.get("medias") or []
+            for m in media_list:
+                if isinstance(m, dict):
+                    img_url = m.get("url") or m.get("thumb") or m.get("src") or ""
+                    if img_url:
+                        images.append(img_url)
+                elif isinstance(m, str):
+                    images.append(m)
+
+            comments = item.get("comments") or []
+            if isinstance(comments, list):
+                comments = [
+                    {
+                        "username": c.get("username") or c.get("userName") or c.get("wxid") or "",
+                        "nickname": c.get("nickname") or c.get("nickName") or c.get("displayName") or "",
+                        "content": c.get("content") or c.get("text") or "",
+                        "time": c.get("createTime") or c.get("create_time") or 0,
+                    }
+                    for c in comments if isinstance(c, dict)
+                ]
+            else:
+                comments = []
+
+            likes = item.get("likes") or item.get("likeList") or []
+            if isinstance(likes, list):
+                likes = [
+                    {
+                        "username": l.get("username") or l.get("userName") or l.get("wxid") or (l if isinstance(l, str) else ""),
+                        "nickname": l.get("nickname") or l.get("nickName") or l.get("displayName") or "",
+                    } if isinstance(l, dict) else {"username": l, "nickname": l}
+                    for l in likes
+                ]
+            else:
+                likes = []
+
+            location = item.get("location") or item.get("poiName") or ""
+            post_id = item.get("postId") or item.get("post_id") or item.get("timelineId") or item.get("timeline_id") or ""
+
+            posts.append({
+                "post_id": str(post_id),
+                "author": username,
+                "nickname": nickname,
+                "avatar": avatar,
+                "content": content,
+                "time": str(create_time),
+                "location": location,
+                "images": images,
+                "comments": comments,
+                "likes": likes,
+            })
+        return posts
+
+    def _on_weflow_pre_send(self, chat_name: str) -> None:
+        """WeFlow 模式发送前钩子 — 无需暂停轮询（轮询自动跳过已读）"""
+
+    def _on_weflow_post_send(self, chat_name: str) -> None:
+        """WeFlow 模式发送后钩子 — 更新 watermark，防止回显"""
+
+    def _on_wechat_revoke(self, msg: dict) -> None:
+        """处理 WeFlow 撤回事件"""
+        rid = msg.get("rawid", "") or msg.get("server_id", "")
+        if rid:
+            logger.info("消息撤回: rawid=%s", rid)
 
     def _send_moment_response(self, req_id: str, data: dict) -> None:
         """发送朋友圈响应回 Adapter"""

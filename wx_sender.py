@@ -34,7 +34,17 @@ class WeChatSender:
     def set_pre_send_hook(self, hook: Callable[[str], None]) -> None:
         self._on_pre_send = hook
 
+    def update_params(self, send_delay: float | None = None, close_weixin: bool | None = None) -> None:
+        if send_delay is not None:
+            self._send_delay = send_delay
+        if close_weixin is not None:
+            self._close_weixin = close_weixin
+        if send_delay is not None or close_weixin is not None:
+            logger.info("sender 参数已更新: delay=%s close=%s", self._send_delay, self._close_weixin)
+
     def start(self) -> None:
+        if self._running:
+            return
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True, name="wx-sender")
         self._thread.start()
