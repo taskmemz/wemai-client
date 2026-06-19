@@ -86,6 +86,12 @@ format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 | **pyweixin** | UIA 自动化操控微信 GUI | 需要 pyweixin 包 + 桌面微信登录 |
 | **WeFlow** | WeFlow HTTP API + SSE 推送 | WeFlow 后台运行，无需 GUI 操作 |
 
+WeFlow 是一个完全本地的微信聊天记录实时查看与导出工具，提供 HTTP API 和 SSE 推送。Client 通过 WeFlow 接口接收消息（无需 GUI 操作），图片直接解密返回。
+
+下载地址：
+- 主项目（Electron 版）：<https://github.com/Nixer-2301/WeFlowBackup/releases>
+- Rust CLI 预览版：<https://github.com/334456777/WeFlow/releases/tag/nightly-preview>
+
 两种模式的发送均走 `pyweixin` 的 `send_messages_to_friend`（Adapter 自动将 WeFlow 收到的 wxid 转为显示名称后再传给 Client）。
 
 ## 工作流程
