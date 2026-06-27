@@ -247,13 +247,25 @@ class WeFlowClient:
         return None
 
     @staticmethod
-    def _parse_reply(root: ET.Element) -> dict | None:
-        reply = root.find(".//reply")
-        if reply is None:
+    def _parse_refermsg(appmsg: ET.Element) -> dict | None:
+        """解析 <appmsg> 内的 <refermsg>（引用回复）。"""
+        ref = appmsg.find("refermsg")
+        if ref is None:
             return None
-        r = {}
-        for child in reply:
-            r[child.tag] = child.text.strip() if child.text else ""
+        r = {"type": "quote"}
+        for child in ref:
+            tag = child.tag
+            text = child.text.strip() if child.text else ""
+            if tag == "content":
+                r["content"] = text
+            elif tag == "displayname":
+                r["display_name"] = text
+            elif tag == "fromusr":
+                r["from_user"] = text
+            elif tag == "svrid":
+                r["svr_id"] = text
+            elif tag == "createtime":
+                r["create_time"] = text
         return r
 
     def _parse_raw_xml(self, raw_xml: str) -> dict:
@@ -273,17 +285,20 @@ class WeFlowClient:
         if fu is not None and fu.text:
             result["from_username"] = fu.text.strip()
 
-        app = self._parse_appmsg(root)
-        if app:
-            result["appmsg"] = app
+        appmsg_el = root.find(".//appmsg")
+        if appmsg_el is not None:
+            # 优先检测引用回复（refermsg），有则跳过分享卡片
+            refer = self._parse_refermsg(appmsg_el)
+            if refer:
+                result["quote"] = refer
+            else:
+                app = self._parse_appmsg(root)
+                if app:
+                    result["appmsg"] = app
 
         rev = self._parse_revoke(root)
         if rev:
             result["revoke"] = rev
-
-        reply = self._parse_reply(root)
-        if reply:
-            result["reply"] = reply
 
         return result
 
@@ -419,6 +434,11 @@ class WeFlowClient:
             raw_xml = detail.get("rawContent") or ""
             parsed_raw = self._parse_raw_xml(raw_xml)
 
+            quote = parsed_raw.get("quote")
+            if quote:
+                msg["quote"] = quote
+                msg["appmsg_label"] = "引用回复"
+
             appmsg = parsed_raw.get("appmsg")
             if appmsg:
                 atype = appmsg.get("app_type", "")
@@ -436,9 +456,6 @@ class WeFlowClient:
                     msg["appmsg_app_name"] = appmsg["app_name"]
                 if appmsg.get("description"):
                     msg["appmsg_description"] = appmsg["description"]
-
-            if parsed_raw.get("reply"):
-                msg["reply"] = parsed_raw["reply"]
 
             if parsed_raw.get("revoke"):
                 msg["revoke"] = parsed_raw["revoke"]
@@ -461,11 +478,12 @@ class WeFlowClient:
                 elif mt == "voice":
                     msg["msg_type"] = "voice"
 
+        label = msg.get("appmsg_label", "")
         logger.info(
             "[%s] %s%s: %s",
             "群" if is_group else "私",
             chat_name,
-            f" ({parsed_raw.get('appmsg', {}).get('app_type', '')})" if parsed_raw.get("appmsg") else "",
+            f" ({label})" if label else "",
             content[:80],
         )
 
