@@ -7,6 +7,7 @@ import queue
 import signal
 import sys
 import threading
+import time
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,6 +59,7 @@ class WeMaiClient:
         self._weflow: WeFlowClient | None = None
         self._current_mode: str | None = None
         self._config_received: bool = False
+        self._friend_check_thread: threading.Thread | None = None
 
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -145,6 +147,38 @@ class WeMaiClient:
         self._sender.stop()
         self._current_mode = None
 
+    def _start_friend_check(self) -> None:
+        if self._friend_check_thread is not None:
+            return
+        self._friend_check_thread = threading.Thread(target=self._friend_check_loop, daemon=True, name="friend-check")
+        self._friend_check_thread.start()
+
+    _SEEN_FRIEND: set[str] = set()
+
+    def _friend_check_loop(self) -> None:
+        while True:
+            time.sleep(60)
+            try:
+                from pyweixin import Contacts
+                nf = Contacts.check_new_friends(verify=False, limit=8, clear=False)
+                if not nf:
+                    continue
+                for detail in nf:
+                    if detail in self._SEEN_FRIEND:
+                        continue
+                    self._SEEN_FRIEND.add(detail)
+                    if len(self._SEEN_FRIEND) > 1000:
+                        self._SEEN_FRIEND.clear()
+                    if "已添加" in detail or "已过期" in detail:
+                        continue
+                    self._on_friend_request({
+                        "type": "friend_request",
+                        "content": detail[:200],
+                        "details": detail,
+                    })
+            except Exception:
+                pass
+
     async def _start_weflow(self, msg: dict) -> None:
         base_url = msg.get("weflow_base_url", "http://127.0.0.1:5031")
         api_token = msg.get("weflow_api_token", "")
@@ -165,6 +199,7 @@ class WeMaiClient:
         self._sender.start()
         self._weflow.start_push()
         self._current_mode = "weflow"
+        self._start_friend_check()
         logger.info("WeFlow 模式已启动")
 
     async def _start_pyweixin(self, msg: dict) -> None:

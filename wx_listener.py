@@ -10,6 +10,10 @@ from typing import Any, Callable
 
 logger = logging.getLogger("wemai_client.listener")
 
+_EMOJI_LABELS = ("动画表情", "Animated Stickers", "動態貼圖")
+_IMAGE_LABELS = ("[图片]", "图片", "[Image]", "Image", "[圖片]", "圖片")
+_VIDEO_LABELS = ("[视频]", "视频", "[Video]", "Video", "[影片]", "影片")
+
 _KNOWN_IDS: set[str] = set()
 _KNOWN_LOCK = threading.Lock()
 
@@ -390,8 +394,6 @@ class WeChatListener:
                 logger.info("全局扫描(全) 未发现新聊天")
         except Exception as e:
             logger.warning("全局扫描(全) 异常: %s", e)
-        self._type_home_on_session_list()
-        self._type_home_on_session_list()
         self._type_home_on_session_list()
 
     def _open_and_monitor_new_chat(self, Navigator, chat_name: str) -> None:
@@ -835,18 +837,13 @@ class WeChatListener:
 
     @staticmethod
     def _parse_message(chat_name: str, text: str, is_group: bool = False) -> tuple[str, str, str, bool]:
-        # 特殊标签检测
-        emoji_labels = ("动画表情", "Animated Stickers", "動態貼圖")
-        image_labels = ("[图片]", "图片", "[Image]", "Image", "[圖片]", "圖片")
-        video_labels = ("[视频]", "视频", "[Video]", "Video", "[影片]", "影片")
-
-        if any(text.strip().startswith(l) for l in emoji_labels):
+        if any(text.strip().startswith(l) for l in _EMOJI_LABELS):
             return "emoji", chat_name, "[动画表情]", False
 
-        if any(text.strip().startswith(l) for l in image_labels):
+        if any(text.strip().startswith(l) for l in _IMAGE_LABELS):
             return "image", chat_name, "[图片]", False
 
-        if any(text.strip().startswith(l) for l in video_labels):
+        if any(text.strip().startswith(l) for l in _VIDEO_LABELS):
             return "video", chat_name, "[视频]", False
 
         # 已知是群聊：尝试用 "\n" 拆分出发送者
@@ -999,10 +996,6 @@ class WeChatListener:
         sender = ""
         content = text
 
-        emoji_labels = ("动画表情", "Animated Stickers", "動態貼圖")
-        image_labels = ("[图片]", "图片", "[Image]", "Image", "[圖片]", "圖片")
-        video_labels = ("[视频]", "视频", "[Video]", "Video", "[影片]", "影片")
-
         if is_group:
             # 群聊：用群成员列表正则匹配发送人
             group_members = self._chat_group_members.get(chat_name, [])
@@ -1036,11 +1029,11 @@ class WeChatListener:
 
         # 从 content 检测特殊消息类型
         ct = content.strip()
-        if any(ct.startswith(l) for l in emoji_labels):
+        if any(ct.startswith(l) for l in _EMOJI_LABELS):
             msg_type = "emoji"
-        elif any(ct.startswith(l) for l in image_labels):
+        elif any(ct.startswith(l) for l in _IMAGE_LABELS):
             msg_type = "image"
-        elif any(ct.startswith(l) for l in video_labels):
+        elif any(ct.startswith(l) for l in _VIDEO_LABELS):
             msg_type = "video"
 
         return msg_type, sender, content

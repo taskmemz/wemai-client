@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import queue
 import threading
 import time
@@ -95,12 +97,11 @@ class WeChatSender:
                 continue
             if stype == "image":
                 try:
-                    import base64, os, time as _time
                     raw = base64.b64decode(sdata)
                     ext = ".gif" if raw[:3] == b"GIF" else ".png"
                     img_dir = os.path.join(os.path.dirname(__file__), "send_cache")
                     os.makedirs(img_dir, exist_ok=True)
-                    dst = os.path.join(img_dir, f"{int(_time.time() * 1000)}{ext}")
+                    dst = os.path.join(img_dir, f"{int(time.time() * 1000)}{ext}")
                     with open(dst, "wb") as f:
                         f.write(raw)
                     GlobalConfig.send_delay = max(self._send_delay, 0.5)
