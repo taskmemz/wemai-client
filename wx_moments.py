@@ -6,10 +6,19 @@ import logging
 logger = logging.getLogger("wemai_client.moments")
 
 
-class WeChatMoments:
-    def __init__(self) -> None:
-        pass
+def _simplify_posts(posts: list[dict], number: int) -> list[dict]:
+    return [
+        {
+            "author": str(p.get("好友", "")),
+            "content": str(p.get("内容", "")),
+            "time": str(p.get("发布时间", "")),
+            "images": int(p.get("图片数量", 0)),
+        }
+        for p in posts[:number]
+    ]
 
+
+class WeChatMoments:
     @staticmethod
     def read_recent(number: int = 10) -> list[dict]:
         from pyweixin import GlobalConfig
@@ -24,15 +33,7 @@ class WeChatMoments:
                     save_detail=False, close_weixin=False,
                 )
                 if isinstance(posts, list):
-                    simplified = []
-                    for p in posts[:number]:
-                        simplified.append({
-                            "author": str(p.get("好友", "")),
-                            "content": str(p.get("内容", "")),
-                            "time": str(p.get("发布时间", "")),
-                            "images": int(p.get("图片数量", 0)),
-                        })
-                    return simplified
+                    return _simplify_posts(posts, number)
             except Exception as e:
                 logger.warning("读取朋友圈失败(第%d次): %s", attempt + 1, e)
                 _time.sleep(1.5)
@@ -60,15 +61,7 @@ class WeChatMoments:
                 save_detail=False, close_weixin=False,
             )
             if isinstance(posts, list):
-                simplified = []
-                for p in posts[:number]:
-                    simplified.append({
-                        "author": str(p.get("好友", "")),
-                        "content": str(p.get("内容", "")),
-                        "time": str(p.get("发布时间", "")),
-                        "images": int(p.get("图片数量", 0)),
-                    })
-                return simplified
+                return _simplify_posts(posts, number)
         except Exception as e:
             logger.warning("读取好友朋友圈失败: %s", e)
         return []

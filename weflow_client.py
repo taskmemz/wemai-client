@@ -65,13 +65,13 @@ class WeFlowClient:
 
     def health_check(self) -> bool:
         try:
-            data = self._do_get(f"{self._base}/api/v1/health", timeout=5)
-            if data:
-                return (
-                    data.get("ok") is True
-                    or data.get("status") == "ok"
-                    or isinstance(data.get("data"), dict) and data["data"].get("ok") is True
-                )
+            resp = self._session.get(f"{self._base}/api/v1/health", timeout=5)
+            data = resp.json() if resp.text else {}
+            return (
+                data.get("ok") is True
+                or data.get("status") == "ok"
+                or (isinstance(data.get("data"), dict) and data["data"].get("ok") is True)
+            )
         except Exception:
             pass
         return False
@@ -490,12 +490,10 @@ class WeFlowClient:
         if self._on_message is not None:
             self._on_message(msg)
 
-    # ─── rust SSE (placeholder) ───────────────────────────────
+    # ─── message handling ──────────────────────────────────────
 
     def _handle_rust_sse(self, event: dict) -> None:
-        pass
-
-    # ─── media fetching ────────────────────────────────────────
+        pass  # ponytail: Rust SSE event format TBD
 
     def _fetch_message_detail(self, session_id: str, rawid: str) -> dict | None:
         try:
@@ -555,19 +553,6 @@ class WeFlowClient:
         except Exception as e:
             logger.debug("HTTP GET %s 失败: %s", url, e)
             return {}
-
-    def _do_get(
-        self, url: str,
-        params: dict[str, str] | None = None,
-        timeout: int = 15,
-    ) -> dict | None:
-        """Raw HTTP GET returning dict or None — used by health_check which handles non-200 gracefully."""
-        try:
-            resp = self._session.get(url, params=params, timeout=timeout)
-            return resp.json() if resp.text else {}
-        except Exception as e:
-            logger.debug("HTTP GET %s 失败: %s", url, e)
-            return None
 
     @staticmethod
     def _unwrap_data(resp: dict) -> list[dict]:

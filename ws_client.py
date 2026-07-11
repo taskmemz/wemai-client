@@ -3,9 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any, Callable
 
 logger = logging.getLogger("wemai_client.ws")
+
+
+def _set_keepalive(sock: socket.socket) -> None:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
 
 class WsPluginClient:
@@ -69,6 +74,7 @@ class WsPluginClient:
                 self._reader, self._writer = await asyncio.open_connection(
                     self._host, self._port,
                 )
+                _set_keepalive(self._writer.get_extra_info("socket"))
                 self._connected = True
                 logger.info("已连接到插件服务器 %s:%s", self._host, self._port)
                 return
@@ -81,12 +87,10 @@ class WsPluginClient:
                 await asyncio.sleep(self._reconnect_delay)
 
     async def run(self) -> None:
-        backoff = 0
         while self._should_run:
             await self.connect()
             if not self._should_run or not self._connected:
                 break
-            backoff = 0
             await self.request_config()
             logger.info("连接已建立，开始接收消息")
             while self._should_run and self._connected:
@@ -119,9 +123,7 @@ class WsPluginClient:
                     self._connected = False
                     await self._cleanup()
             if self._should_run:
-                backoff = min((backoff + 1) * self._reconnect_delay, 30.0)
-                logger.info("%.1f 秒后重连 %s:%s ...", backoff, self._host, self._port)
-                await asyncio.sleep(backoff)
+                logger.info("重新连接 %s:%s ...", self._host, self._port)
 
     async def request_config(self) -> bool:
         return await self.send_inbound({"type": "sync_config"})
