@@ -154,15 +154,33 @@ class WeMaiClient:
         self._friend_check_thread.start()
 
     _SEEN_FRIEND: set[str] = set()
+    _FR_STATS: dict = {"start_ts": 0, "checks": 0, "found": 0, "errors": 0}
+    _FR_NEXT_CHECK_TS: float = 0
 
     def _friend_check_loop(self) -> None:
+        import random
+        self._FR_STATS["start_ts"] = time.time()
+
         while True:
-            time.sleep(60)
+            now = time.time()
+            wait = max(0, self._FR_NEXT_CHECK_TS - now)
+            if wait > 0:
+                time.sleep(min(wait, 10))
+                continue
+
+            # 随机间隔 3-8 分钟 + 少量高斯抖动
+            interval = random.gauss(330, 60)  # mean 5.5min
+            interval = max(120, min(600, interval))
+            self._FR_NEXT_CHECK_TS = now + interval
+            self._FR_STATS["checks"] += 1
+
+            nf: list[str] = []
+            new_requests: list[str] = []
             try:
                 from pyweixin import Contacts
-                nf = Contacts.check_new_friends(verify=False, limit=8, clear=False)
-                if not nf:
-                    continue
+                nf = Contacts.check_new_friends(verify=False, limit=8, clear=False) or []
+                if nf:
+                    self._FR_STATS["found"] += 1
                 for detail in nf:
                     if detail in self._SEEN_FRIEND:
                         continue
@@ -171,13 +189,31 @@ class WeMaiClient:
                         self._SEEN_FRIEND.clear()
                     if "已添加" in detail or "已过期" in detail:
                         continue
+                    new_requests.append(detail)
                     self._on_friend_request({
                         "type": "friend_request",
                         "content": detail[:200],
                         "details": detail,
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                self._FR_STATS["errors"] += 1
+                logger.debug("好友检查异常: %s", e)
+
+            c = self._FR_STATS["checks"]
+            log_msg = f"好友检查[{c}]: {len(nf)} 条"
+            if new_requests:
+                log_msg += f" | ✅ 新请求: {len(new_requests)} 条"
+            log_msg += f" | 下次约 {interval:.0f} 秒后"
+            logger.info(log_msg)
+
+            # 每 10 次打印一次完整统计
+            if c % 10 == 0:
+                elapsed = time.time() - self._FR_STATS["start_ts"]
+                avg = elapsed / c if c else 0
+                logger.info(
+                    "好友检查统计: 已运行 %.1f 分钟 | 检查 %d 次 | 发现 %d 次 | 错误 %d 次 | 平均间隔 %.0f 秒",
+                    elapsed / 60, c, self._FR_STATS["found"], self._FR_STATS["errors"], avg,
+                )
 
     async def _start_weflow(self, msg: dict) -> None:
         base_url = msg.get("weflow_base_url", "http://127.0.0.1:5031")

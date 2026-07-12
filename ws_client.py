@@ -11,6 +11,11 @@ logger = logging.getLogger("wemai_client.ws")
 
 def _set_keepalive(sock: socket.socket) -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    try:
+        import struct
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS, struct.pack('III', 10000, 3000, 3))
+    except AttributeError:
+        pass  # SIO_KEEPALIVE_VALS 只在 Windows 上有
 
 
 class WsPluginClient:
@@ -93,12 +98,26 @@ class WsPluginClient:
                 break
             await self.request_config()
             logger.info("连接已建立，开始接收消息")
+            last_activity = asyncio.get_event_loop().time()
             while self._should_run and self._connected:
                 try:
-                    raw_len = await self._read_exact(4)
+                    # 每 30 秒无活动就发 ping，读取也用 30s 分片超时，避免卡死
+                    idle = asyncio.get_event_loop().time() - last_activity
+                    if idle >= 30:
+                        await self.send_inbound({"type": "ping"})
+
+                    try:
+                        raw_len = await asyncio.wait_for(
+                            self._reader.readexactly(4), timeout=30,
+                        )
+                    except asyncio.TimeoutError:
+                        # 读取超时只是正常循环，不触发重连
+                        continue
+                    last_activity = asyncio.get_event_loop().time()
                     length = int.from_bytes(raw_len, "big")
                     payload = await self._read_exact(length)
                     msg = json.loads(payload.decode("utf-8"))
+                    last_activity = asyncio.get_event_loop().time()
                     # 服务端心跳 → 回复 pong
                     if msg.get("type") == "ping":
                         await self.send_inbound({"type": "pong"})
